@@ -60,6 +60,8 @@ python app.py
 
 The backend will start on `http://localhost:5000`
 
+> **Note**: For production, the backend is deployed at `https://karabala10.pythonanywhere.com`
+
 ### 3. Frontend Setup
 
 1. Navigate to the frontend directory:
@@ -81,6 +83,8 @@ npm start
 ```
 
 The frontend will open at `http://localhost:3000`
+
+> **Note**: The frontend is configured to use the production API at `https://karabala10.pythonanywhere.com` by default. For local development, you can set `REACT_APP_API_URL=http://localhost:5000/api` in a `.env` file in the frontend directory.
 
 ## 📖 Usage Guide
 
