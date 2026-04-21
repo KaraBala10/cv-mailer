@@ -11,8 +11,12 @@ import os
 import smtplib
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 from flask_cors import CORS
 
 from code_sender import (
