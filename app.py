@@ -120,9 +120,10 @@ def get_config():
             "job_title": "Software Engineer and Developer",  # Default job title
             "subject": "",  # Empty default, user will provide
             "server_oauth_configured": _server_oauth_env_configured(),
-            "google_oauth_client_id": os.getenv(
-                "GOOGLE_OAUTH_WEB_CLIENT_ID", ""
-            ).strip(),
+            "google_oauth_client_id": (
+                os.getenv("GOOGLE_OAUTH_WEB_CLIENT_ID", "").strip()
+                or os.getenv("GMAIL_OAUTH_CLIENT_ID", "").strip()
+            ),
         }
     )
 

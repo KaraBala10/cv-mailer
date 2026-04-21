@@ -210,10 +210,10 @@ function App() {
           }));
 
           try {
-            const authFields = serverOauthConfigured
-              ? {}
-              : oauthAccessToken.trim()
-                ? { oauth_access_token: oauthAccessToken.trim() }
+            const authFields = oauthAccessToken.trim()
+              ? { oauth_access_token: oauthAccessToken.trim() }
+              : serverOauthConfigured
+                ? {}
                 : { app_password: appPassword.trim() };
 
             const response = await axios.post(`${API_BASE_URL}/send-single`, {
@@ -339,9 +339,11 @@ function App() {
               </div>
             )}
 
-            {!serverOauthConfigured && googleClientId && (
+            {googleClientId && (
               <div className="form-group">
-                <label>Google account *</label>
+                <label>
+                  Google account {serverOauthConfigured ? "(optional)" : "*"}
+                </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                   <button
                     type="button"
@@ -360,9 +362,15 @@ function App() {
                   )}
                 </div>
                 <small className="help-text">
-                  Uses OAuth2 for Gmail SMTP (scope{" "}
-                  <code>https://mail.google.com/</code>). Your Google password
-                  is never sent to this app.
+                  {serverOauthConfigured
+                    ? "If server OAuth fails (e.g. unauthorized_client), sign in here — your access token is sent with each send and overrides the server refresh token."
+                    : "Uses OAuth2 for Gmail SMTP (scope "}
+                  {!serverOauthConfigured && (
+                    <>
+                      <code>https://mail.google.com/</code>). Your Google
+                      password is never sent to this app.
+                    </>
+                  )}
                 </small>
               </div>
             )}
