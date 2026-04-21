@@ -45,6 +45,14 @@ function App() {
     process.env.REACT_APP_GOOGLE_OAUTH_CLIENT_ID ||
     "";
   const serverOauthConfigured = Boolean(config?.server_oauth_configured);
+  const hasBrowserGoogleToken = Boolean(oauthAccessToken.trim());
+  /** Google client in use → must sign in in the browser. Server-only or app-password paths skip this. */
+  const authReadyForSend =
+    (Boolean(googleClientId) && hasBrowserGoogleToken) ||
+    (!googleClientId && serverOauthConfigured) ||
+    (!googleClientId &&
+      !serverOauthConfigured &&
+      Boolean(appPasswordGmail.trim() && appPassword.trim()));
 
   useEffect(() => {
     if (!googleClientId) {
@@ -137,20 +145,22 @@ function App() {
     }
 
     const hasGoogleToken = Boolean(oauthAccessToken.trim());
-    const hasAppPassword = Boolean(appPassword.trim());
-    if (serverOauthConfigured) {
-      // API uses refresh token from env; no password or browser token.
-    } else if (googleClientId) {
+    if (googleClientId) {
       if (!hasGoogleToken) {
         showNotification('Click "Sign in with Google" first.', "warning");
         return;
       }
-    } else if (!appPasswordGmail.trim()) {
-      showNotification("Please enter your Gmail address.", "warning");
-      return;
-    } else if (!hasAppPassword) {
-      showNotification("Please enter your Gmail app password.", "warning");
-      return;
+    } else if (serverOauthConfigured) {
+      // API uses refresh token from env only.
+    } else {
+      if (!appPasswordGmail.trim()) {
+        showNotification("Please enter your Gmail address.", "warning");
+        return;
+      }
+      if (!appPassword.trim()) {
+        showNotification("Please enter your Gmail app password.", "warning");
+        return;
+      }
     }
 
     if (!jobTitle.trim()) {
@@ -330,9 +340,7 @@ function App() {
 
             {googleClientId && (
               <div className="form-group">
-                <label>
-                  Google account {serverOauthConfigured ? "(optional)" : "*"}
-                </label>
+                <label>Google account *</label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
                   <button
                     type="button"
@@ -566,7 +574,9 @@ function App() {
           <button
             onClick={sendEmails}
             disabled={
-              loading || recipients.filter((r) => r.email.trim()).length === 0
+              loading ||
+              !authReadyForSend ||
+              recipients.filter((r) => r.email.trim()).length === 0
             }
             className="btn btn-send"
           >
