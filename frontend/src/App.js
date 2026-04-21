@@ -1,10 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import "./App.css";
 import Notification from "./Notification";
 
 const API_BASE_URL =
   process.env.REACT_APP_API_URL || "https://karabala10.pythonanywhere.com/api";
+
+/** Same-tab refresh keeps Google session until Sign out or token revoked (sessionStorage). */
+const STORAGE_GOOGLE_TOKEN = "cv_mailer_google_access_token";
+const STORAGE_GOOGLE_USER = "cv_mailer_google_user";
 
 function App() {
   const [recipients, setRecipients] = useState([{ email: "", company: "" }]);
@@ -78,31 +82,118 @@ function App() {
     };
   }, [googleClientId]);
 
-  const fetchGoogleUserProfile = async (accessToken) => {
-    setGoogleUser(null);
+  const clearGoogleSession = useCallback(() => {
     try {
-      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!r.ok) {
-        setGoogleUser({ email: "", name: "", picture: "" });
-        return;
-      }
-      const u = await r.json();
-      setGoogleUser({
-        email: (u.email || "").trim(),
-        name: (u.name || "").trim(),
-        picture: (u.picture || "").trim(),
-      });
+      sessionStorage.removeItem(STORAGE_GOOGLE_TOKEN);
+      sessionStorage.removeItem(STORAGE_GOOGLE_USER);
     } catch {
-      setGoogleUser({ email: "", name: "", picture: "" });
+      /* ignore */
     }
-  };
-
-  const clearGoogleSession = () => {
     setOauthAccessToken("");
     setGoogleUser(undefined);
-  };
+  }, []);
+
+  /** @returns {Promise<number>} HTTP status (200 if OK) */
+  const fetchGoogleUserProfile = useCallback(
+    async (accessToken, { showLoading = true } = {}) => {
+      if (showLoading) {
+        setGoogleUser(null);
+      }
+      try {
+        const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!r.ok) {
+          if (showLoading) {
+            setGoogleUser({ email: "", name: "", picture: "" });
+            try {
+              sessionStorage.removeItem(STORAGE_GOOGLE_USER);
+            } catch {
+              /* ignore */
+            }
+          }
+          return r.status;
+        }
+        const u = await r.json();
+        const profile = {
+          email: (u.email || "").trim(),
+          name: (u.name || "").trim(),
+          picture: (u.picture || "").trim(),
+        };
+        setGoogleUser(profile);
+        try {
+          sessionStorage.setItem(STORAGE_GOOGLE_USER, JSON.stringify(profile));
+        } catch {
+          /* ignore */
+        }
+        return r.status;
+      } catch {
+        if (showLoading) {
+          setGoogleUser({ email: "", name: "", picture: "" });
+          try {
+            sessionStorage.removeItem(STORAGE_GOOGLE_USER);
+          } catch {
+            /* ignore */
+          }
+        }
+        return 0;
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!googleClientId) {
+      return;
+    }
+    let cancelled = false;
+    const token = (() => {
+      try {
+        return sessionStorage.getItem(STORAGE_GOOGLE_TOKEN)?.trim() || "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!token) {
+      return;
+    }
+
+    let cached = null;
+    try {
+      const raw = sessionStorage.getItem(STORAGE_GOOGLE_USER);
+      if (raw) {
+        cached = JSON.parse(raw);
+      }
+    } catch {
+      cached = null;
+    }
+
+    const hasCachedProfile =
+      cached &&
+      typeof cached === "object" &&
+      (cached.email || cached.name || cached.picture);
+
+    setOauthAccessToken(token);
+    if (hasCachedProfile) {
+      setGoogleUser(cached);
+    }
+
+    void (async () => {
+      const status = await fetchGoogleUserProfile(token, {
+        showLoading: !hasCachedProfile,
+      });
+      if (cancelled) {
+        return;
+      }
+      if (status === 401 || status === 403) {
+        clearGoogleSession();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [googleClientId, fetchGoogleUserProfile, clearGoogleSession]);
 
   const requestGoogleAccessToken = () => {
     if (!googleClientId || !window.google?.accounts?.oauth2) {
@@ -128,8 +219,14 @@ function App() {
           return;
         }
         if (tokenResponse.access_token) {
-          setOauthAccessToken(tokenResponse.access_token);
-          void fetchGoogleUserProfile(tokenResponse.access_token);
+          const t = tokenResponse.access_token;
+          setOauthAccessToken(t);
+          try {
+            sessionStorage.setItem(STORAGE_GOOGLE_TOKEN, t);
+          } catch {
+            /* ignore */
+          }
+          void fetchGoogleUserProfile(t);
           showNotification("Signed in with Google", "success");
         }
       },
