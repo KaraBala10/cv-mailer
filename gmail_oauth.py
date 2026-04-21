@@ -8,8 +8,12 @@ import smtplib
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
-# Required for Gmail SMTP with XOAUTH2 (send/receive via SMTP).
-GMAIL_SMTP_SCOPE = "https://mail.google.com/"
+# Gmail SMTP + userinfo.email (to resolve the signed-in address on the server).
+GMAIL_SMTP_SCOPES = [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/userinfo.email",
+]
+GMAIL_SMTP_SCOPE = GMAIL_SMTP_SCOPES[0]
 
 
 def build_xoauth2_string(username: str, access_token: str) -> str:
@@ -35,7 +39,7 @@ def access_token_from_refresh_token(
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
         client_secret=client_secret,
-        scopes=[GMAIL_SMTP_SCOPE],
+        scopes=GMAIL_SMTP_SCOPES,
     )
     creds.refresh(Request())
     if not creds.token:

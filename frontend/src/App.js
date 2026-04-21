@@ -45,6 +45,8 @@ function App() {
     process.env.REACT_APP_GOOGLE_OAUTH_CLIENT_ID ||
     "";
   const serverOauthConfigured = Boolean(config?.server_oauth_configured);
+  const senderMayBeInferred =
+    Boolean(oauthAccessToken.trim()) || serverOauthConfigured;
 
   useEffect(() => {
     if (!googleClientId) {
@@ -76,7 +78,8 @@ function App() {
     }
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: googleClientId,
-      scope: "https://mail.google.com/",
+      scope:
+        "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email",
       callback: (tokenResponse) => {
         if (tokenResponse.error) {
           showNotification(
@@ -87,6 +90,26 @@ function App() {
         }
         if (tokenResponse.access_token) {
           setOauthAccessToken(tokenResponse.access_token);
+          (async () => {
+            try {
+              const r = await fetch(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                {
+                  headers: {
+                    Authorization: `Bearer ${tokenResponse.access_token}`,
+                  },
+                },
+              );
+              if (r.ok) {
+                const info = await r.json();
+                if (info.email) {
+                  setSenderEmail(info.email);
+                }
+              }
+            } catch {
+              /* ignore; user can type sender or server will resolve */
+            }
+          })();
           showNotification("Signed in with Google", "success");
         }
       },
@@ -135,7 +158,7 @@ function App() {
       return;
     }
 
-    if (!senderEmail.trim()) {
+    if (!senderEmail.trim() && !senderMayBeInferred) {
       showNotification("Please enter your sender email address", "warning");
       return;
     }
@@ -318,23 +341,35 @@ function App() {
           <h2>Email Configuration</h2>
           <div className="config-form">
             <div className="form-group">
-              <label htmlFor="sender-email">Sender Email *</label>
+              <label htmlFor="sender-email">
+                Sender email {senderMayBeInferred ? "(optional)" : "*"}
+              </label>
               <input
                 id="sender-email"
                 type="email"
-                placeholder="your-email@gmail.com"
+                placeholder={
+                  senderMayBeInferred
+                    ? "Filled from Google when you sign in"
+                    : "your-email@gmail.com"
+                }
                 value={senderEmail}
                 onChange={(e) => setSenderEmail(e.target.value)}
                 className="input"
-                required
+                required={!senderMayBeInferred}
               />
+              {senderMayBeInferred && (
+                <small className="help-text">
+                  With Google OAuth, your Gmail address is detected
+                  automatically (or you can type it to override).
+                </small>
+              )}
             </div>
             {serverOauthConfigured && (
               <div className="form-group">
                 <p className="help-text">
-                  Gmail is authenticated on the server (OAuth). Use the same
-                  Gmail address as <strong>Sender Email</strong> as the account
-                  you authorized with the refresh token.
+                  Gmail is authenticated on the server (OAuth). Leave sender
+                  blank to use the account tied to the refresh token, or enter
+                  it manually.
                 </p>
               </div>
             )}

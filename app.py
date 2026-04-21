@@ -6,10 +6,13 @@ Provides REST API endpoints for the React frontend.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import smtplib
 import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -74,8 +77,50 @@ def _resolve_gmail_access_token(data: dict) -> str | None:
     return None
 
 
-def _smtp_login_gmail(smtp: smtplib.SMTP, sender_email: str, data: dict) -> None:
-    access_token = _resolve_gmail_access_token(data)
+def _email_from_google_access_token(access_token: str) -> str:
+    """Resolve the Google account email for XOAUTH2 / From header (requires userinfo scope)."""
+    req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        json.JSONDecodeError,
+        TimeoutError,
+    ) as e:
+        logger.warning("Google userinfo request failed: %s", e)
+        return ""
+    return (payload.get("email") or "").strip()
+
+
+def _resolve_sender_and_oauth_token(data: dict) -> tuple[str, str | None]:
+    """
+    Sender is required for SMTP / MIME unless we can derive it via OAuth userinfo.
+    Returns (sender_email, oauth_access_token) with the token reused for SMTP when present.
+    """
+    oauth_token = _resolve_gmail_access_token(data)
+    sender = (data.get("sender_email") or "").strip()
+    if not sender and oauth_token:
+        sender = _email_from_google_access_token(oauth_token) or ""
+    return sender, oauth_token
+
+
+def _smtp_login_gmail(
+    smtp: smtplib.SMTP,
+    sender_email: str,
+    data: dict,
+    *,
+    oauth_access_token: str | None = None,
+) -> None:
+    access_token = (
+        oauth_access_token
+        if oauth_access_token is not None
+        else _resolve_gmail_access_token(data)
+    )
     app_password = (data.get("app_password") or "").strip()
     if access_token:
         smtp_auth_xoauth2(smtp, sender_email, access_token)
@@ -91,13 +136,23 @@ def _smtp_login_gmail(smtp: smtplib.SMTP, sender_email: str, data: dict) -> None
 
 
 @contextmanager
-def _gmail_smtp_session(sender_email: str, data: dict):
+def _gmail_smtp_session(
+    sender_email: str,
+    data: dict,
+    *,
+    oauth_access_token: str | None = None,
+):
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
         logger.info("Connecting to %s:%s", SMTP_SERVER, SMTP_PORT)
         smtp.ehlo()
         smtp.starttls()
         smtp.ehlo()
-        _smtp_login_gmail(smtp, sender_email, data)
+        _smtp_login_gmail(
+            smtp,
+            sender_email,
+            data,
+            oauth_access_token=oauth_access_token,
+        )
         logger.info("Successfully authenticated with SMTP server")
         yield smtp
 
@@ -134,7 +189,6 @@ def send_emails():
     try:
         data = request.get_json()
         recipients = data.get("recipients", [])
-        sender_email = data.get("sender_email", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
@@ -145,9 +199,6 @@ def send_emails():
         if not recipients:
             return jsonify({"error": "No recipients provided"}), 400
 
-        if not sender_email:
-            return jsonify({"error": "Sender email is required"}), 400
-
         if not _has_smtp_auth(data):
             return (
                 jsonify(
@@ -155,6 +206,21 @@ def send_emails():
                         "error": (
                             "Gmail sign-in required: use Google OAuth in the app, "
                             "configure server OAuth env vars, or provide an app password."
+                        )
+                    }
+                ),
+                400,
+            )
+
+        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
+
+        if not sender_email:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Sender email is required (or sign in with Google so we can "
+                            "detect it — userinfo.email scope must be granted)."
                         )
                     }
                 ),
@@ -199,7 +265,9 @@ def send_emails():
         failed_sends = 0
 
         try:
-            with _gmail_smtp_session(sender_email, data) as smtp:
+            with _gmail_smtp_session(
+                sender_email, data, oauth_access_token=oauth_for_smtp
+            ) as smtp:
                 for recipient in recipients:
                     to_email = recipient.get("email", "").strip()
                     if not to_email:
@@ -274,7 +342,6 @@ def send_single_email():
         data = request.get_json()
         recipient = data.get("recipient", {})
         to_email = recipient.get("email", "").strip()
-        sender_email = data.get("sender_email", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
@@ -288,9 +355,6 @@ def send_single_email():
                 400,
             )
 
-        if not sender_email:
-            return jsonify({"success": False, "error": "Sender email is required"}), 400
-
         if not _has_smtp_auth(data):
             return (
                 jsonify(
@@ -299,6 +363,22 @@ def send_single_email():
                         "error": (
                             "Gmail sign-in required: use Google OAuth in the app, "
                             "configure server OAuth env vars, or provide an app password."
+                        ),
+                    }
+                ),
+                400,
+            )
+
+        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
+
+        if not sender_email:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "Sender email is required (or sign in with Google so we can "
+                            "detect it — userinfo.email scope must be granted)."
                         ),
                     }
                 ),
@@ -361,7 +441,9 @@ def send_single_email():
         )
 
         try:
-            with _gmail_smtp_session(sender_email, data) as smtp:
+            with _gmail_smtp_session(
+                sender_email, data, oauth_access_token=oauth_for_smtp
+            ) as smtp:
                 send_one(
                     smtp,
                     sender_email,
@@ -395,18 +477,14 @@ def test_email():
     """Send a test email to a single recipient."""
     try:
         data = request.get_json()
-        test_email = data.get("email", "").strip()
-        sender_email = data.get("sender_email", "").strip()
+        test_email_addr = data.get("email", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
         pdf_filename = data.get("pdf_filename", "CV.pdf")
 
-        if not test_email:
+        if not test_email_addr:
             return jsonify({"error": "Email address is required"}), 400
-
-        if not sender_email:
-            return jsonify({"error": "Sender email is required"}), 400
 
         if not _has_smtp_auth(data):
             return (
@@ -415,6 +493,21 @@ def test_email():
                         "error": (
                             "Gmail sign-in required: use Google OAuth in the app, "
                             "configure server OAuth env vars, or provide an app password."
+                        )
+                    }
+                ),
+                400,
+            )
+
+        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
+
+        if not sender_email:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Sender email is required (or sign in with Google so we can "
+                            "detect it — userinfo.email scope must be granted)."
                         )
                     }
                 ),
@@ -448,16 +541,18 @@ def test_email():
         except Exception as e:
             return jsonify({"error": f"Template loading error: {str(e)}"}), 500
 
-        recipient = {"email": test_email, "company": data.get("company", "")}
+        recipient = {"email": test_email_addr, "company": data.get("company", "")}
         greeting = create_greeting(recipient)
         body = email_template.format(greeting=greeting, job_title=job_title)
 
         try:
-            with _gmail_smtp_session(sender_email, data) as smtp:
+            with _gmail_smtp_session(
+                sender_email, data, oauth_access_token=oauth_for_smtp
+            ) as smtp:
                 send_one(
                     smtp,
                     sender_email,
-                    test_email,
+                    test_email_addr,
                     subject,
                     body,
                     attachment_data=pdf_data,
@@ -467,7 +562,7 @@ def test_email():
             return jsonify(
                 {
                     "success": True,
-                    "message": f"Test email sent successfully to {test_email}",
+                    "message": f"Test email sent successfully to {test_email_addr}",
                 }
             )
         except Exception as e:
