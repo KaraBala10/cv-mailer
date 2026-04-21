@@ -15,6 +15,10 @@ function App() {
   const [appPasswordGmail, setAppPasswordGmail] = useState("");
   const [appPassword, setAppPassword] = useState("");
   const [oauthAccessToken, setOauthAccessToken] = useState("");
+  /**
+   * Google profile: undefined = signed out, null = loading userinfo, object = result.
+   */
+  const [googleUser, setGoogleUser] = useState(undefined);
   const [googleOAuthReady, setGoogleOAuthReady] = useState(false);
   const [jobTitle, setJobTitle] = useState("Software Engineer and Developer");
   const [subject, setSubject] = useState("");
@@ -74,6 +78,32 @@ function App() {
     };
   }, [googleClientId]);
 
+  const fetchGoogleUserProfile = async (accessToken) => {
+    setGoogleUser(null);
+    try {
+      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!r.ok) {
+        setGoogleUser({ email: "", name: "", picture: "" });
+        return;
+      }
+      const u = await r.json();
+      setGoogleUser({
+        email: (u.email || "").trim(),
+        name: (u.name || "").trim(),
+        picture: (u.picture || "").trim(),
+      });
+    } catch {
+      setGoogleUser({ email: "", name: "", picture: "" });
+    }
+  };
+
+  const clearGoogleSession = () => {
+    setOauthAccessToken("");
+    setGoogleUser(undefined);
+  };
+
   const requestGoogleAccessToken = () => {
     if (!googleClientId || !window.google?.accounts?.oauth2) {
       showNotification(
@@ -84,8 +114,11 @@ function App() {
     }
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: googleClientId,
-      scope:
-        "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email",
+      scope: [
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+      ].join(" "),
       callback: (tokenResponse) => {
         if (tokenResponse.error) {
           showNotification(
@@ -96,6 +129,7 @@ function App() {
         }
         if (tokenResponse.access_token) {
           setOauthAccessToken(tokenResponse.access_token);
+          void fetchGoogleUserProfile(tokenResponse.access_token);
           showNotification("Signed in with Google", "success");
         }
       },
@@ -332,17 +366,81 @@ function App() {
             {googleClientId && (
               <div className="form-group">
                 <label>Google account *</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                <div className="google-auth-row">
                   <button
                     type="button"
                     className="btn btn-add"
                     onClick={requestGoogleAccessToken}
-                    disabled={!googleOAuthReady || loading}
+                    disabled={
+                      !googleOAuthReady ||
+                      loading ||
+                      Boolean(oauthAccessToken.trim())
+                    }
                   >
-                    {oauthAccessToken
-                      ? "Re-authorize Gmail"
+                    {oauthAccessToken.trim()
+                      ? "Logged in"
                       : "Sign in with Google"}
                   </button>
+                  {oauthAccessToken.trim() && (
+                    <>
+                      {googleUser === null && (
+                        <span className="google-user-loading">
+                          Loading account…
+                        </span>
+                      )}
+                      {googleUser &&
+                        (googleUser.email ||
+                          googleUser.name ||
+                          googleUser.picture) && (
+                          <div className="google-user-chip">
+                            {googleUser.picture ? (
+                              <img
+                                src={googleUser.picture}
+                                alt=""
+                                className="google-user-avatar"
+                              />
+                            ) : (
+                              <div
+                                className="google-user-avatar google-user-avatar--placeholder"
+                                aria-hidden
+                              >
+                                {(googleUser.name || googleUser.email || "?")
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </div>
+                            )}
+                            <div className="google-user-text">
+                              <span className="google-user-name">
+                                {googleUser.name ||
+                                  googleUser.email ||
+                                  "Google account"}
+                              </span>
+                              {googleUser.name && googleUser.email ? (
+                                <span className="google-user-email">
+                                  {googleUser.email}
+                                </span>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
+                      {googleUser &&
+                        !googleUser.email &&
+                        !googleUser.name &&
+                        !googleUser.picture && (
+                          <span className="google-user-loading">
+                            Connected (profile unavailable)
+                          </span>
+                        )}
+                      <button
+                        type="button"
+                        className="btn-google-signout"
+                        onClick={clearGoogleSession}
+                        disabled={loading}
+                      >
+                        Sign out
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
