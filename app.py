@@ -3,11 +3,14 @@ Flask Backend API for CV-Mailer
 Provides REST API endpoints for the React frontend.
 """
 
+from __future__ import annotations
+
 import base64
 import logging
 import os
 import smtplib
 import time
+from contextlib import contextmanager
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -22,6 +25,7 @@ from code_sender import (
     send_one,
     validate_configuration,
 )
+from gmail_oauth import access_token_from_refresh_token, smtp_auth_xoauth2
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
@@ -33,6 +37,65 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _server_oauth_env_configured() -> bool:
+    return bool(
+        os.getenv("GMAIL_OAUTH_REFRESH_TOKEN", "").strip()
+        and os.getenv("GMAIL_OAUTH_CLIENT_ID", "").strip()
+        and os.getenv("GMAIL_OAUTH_CLIENT_SECRET", "").strip()
+    )
+
+
+def _has_smtp_auth(data: dict) -> bool:
+    if (data.get("oauth_access_token") or "").strip():
+        return True
+    if _server_oauth_env_configured():
+        return True
+    if (data.get("app_password") or "").strip():
+        return True
+    return False
+
+
+def _resolve_gmail_access_token(data: dict) -> str | None:
+    explicit = (data.get("oauth_access_token") or "").strip()
+    if explicit:
+        return explicit
+    if _server_oauth_env_configured():
+        return access_token_from_refresh_token(
+            os.environ["GMAIL_OAUTH_REFRESH_TOKEN"].strip(),
+            os.environ["GMAIL_OAUTH_CLIENT_ID"].strip(),
+            os.environ["GMAIL_OAUTH_CLIENT_SECRET"].strip(),
+        )
+    return None
+
+
+def _smtp_login_gmail(smtp: smtplib.SMTP, sender_email: str, data: dict) -> None:
+    access_token = _resolve_gmail_access_token(data)
+    app_password = (data.get("app_password") or "").strip()
+    if access_token:
+        smtp_auth_xoauth2(smtp, sender_email, access_token)
+        return
+    if app_password:
+        smtp.login(sender_email, app_password)
+        return
+    raise RuntimeError(
+        "Gmail authentication required: use Sign in with Google, set "
+        "GMAIL_OAUTH_REFRESH_TOKEN + GMAIL_OAUTH_CLIENT_ID + GMAIL_OAUTH_CLIENT_SECRET "
+        "on the server, or provide app_password."
+    )
+
+
+@contextmanager
+def _gmail_smtp_session(sender_email: str, data: dict):
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
+        logger.info("Connecting to %s:%s", SMTP_SERVER, SMTP_PORT)
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.ehlo()
+        _smtp_login_gmail(smtp, sender_email, data)
+        logger.info("Successfully authenticated with SMTP server")
+        yield smtp
 
 
 @app.route("/api/health", methods=["GET"])
@@ -52,6 +115,10 @@ def get_config():
             "send_delay": SEND_DELAY,
             "job_title": "Software Engineer and Developer",  # Default job title
             "subject": "",  # Empty default, user will provide
+            "server_oauth_configured": _server_oauth_env_configured(),
+            "google_oauth_client_id": os.getenv(
+                "GOOGLE_OAUTH_WEB_CLIENT_ID", ""
+            ).strip(),
         }
     )
 
@@ -63,7 +130,6 @@ def send_emails():
         data = request.get_json()
         recipients = data.get("recipients", [])
         sender_email = data.get("sender_email", "").strip()
-        app_password = data.get("app_password", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
@@ -77,8 +143,18 @@ def send_emails():
         if not sender_email:
             return jsonify({"error": "Sender email is required"}), 400
 
-        if not app_password:
-            return jsonify({"error": "App password is required"}), 400
+        if not _has_smtp_auth(data):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Gmail sign-in required: use Google OAuth in the app, "
+                            "configure server OAuth env vars, or provide an app password."
+                        )
+                    }
+                ),
+                400,
+            )
 
         if not job_title:
             return jsonify({"error": "Job title is required"}), 400
@@ -118,13 +194,7 @@ def send_emails():
         failed_sends = 0
 
         try:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-                logger.info(f"Connecting to {SMTP_SERVER}:{SMTP_PORT}")
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.login(sender_email, app_password)
-                logger.info("Successfully authenticated with SMTP server")
-
+            with _gmail_smtp_session(sender_email, data) as smtp:
                 for recipient in recipients:
                     to_email = recipient.get("email", "").strip()
                     if not to_email:
@@ -170,18 +240,18 @@ def send_emails():
                     if len(recipients) > 1:
                         time.sleep(SEND_DELAY)
 
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": f"Email sending completed. Success: {successful_sends}, Failed: {failed_sends}",
-                        "results": results,
-                        "summary": {
-                            "successful": successful_sends,
-                            "failed": failed_sends,
-                            "total": len(recipients),
-                        },
-                    }
-                )
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Email sending completed. Success: {successful_sends}, Failed: {failed_sends}",
+                    "results": results,
+                    "summary": {
+                        "successful": successful_sends,
+                        "failed": failed_sends,
+                        "total": len(recipients),
+                    },
+                }
+            )
 
         except smtplib.SMTPException as e:
             logger.error(f"SMTP error: {e}")
@@ -200,7 +270,6 @@ def send_single_email():
         recipient = data.get("recipient", {})
         to_email = recipient.get("email", "").strip()
         sender_email = data.get("sender_email", "").strip()
-        app_password = data.get("app_password", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
@@ -217,8 +286,19 @@ def send_single_email():
         if not sender_email:
             return jsonify({"success": False, "error": "Sender email is required"}), 400
 
-        if not app_password:
-            return jsonify({"success": False, "error": "App password is required"}), 400
+        if not _has_smtp_auth(data):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "Gmail sign-in required: use Google OAuth in the app, "
+                            "configure server OAuth env vars, or provide an app password."
+                        ),
+                    }
+                ),
+                400,
+            )
 
         if not job_title:
             return jsonify({"success": False, "error": "Job title is required"}), 400
@@ -276,10 +356,7 @@ def send_single_email():
         )
 
         try:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.login(sender_email, app_password)
+            with _gmail_smtp_session(sender_email, data) as smtp:
                 send_one(
                     smtp,
                     sender_email,
@@ -290,12 +367,12 @@ def send_single_email():
                     attachment_filename=pdf_filename,
                 )
 
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": f"Email sent successfully to {to_email}",
-                    }
-                )
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Email sent successfully to {to_email}",
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {e}")
             return (
@@ -315,7 +392,6 @@ def test_email():
         data = request.get_json()
         test_email = data.get("email", "").strip()
         sender_email = data.get("sender_email", "").strip()
-        app_password = data.get("app_password", "").strip()
         job_title = data.get("job_title", "").strip()
         subject = data.get("subject", "").strip()
         pdf_file_base64 = data.get("pdf_file", "")
@@ -327,8 +403,18 @@ def test_email():
         if not sender_email:
             return jsonify({"error": "Sender email is required"}), 400
 
-        if not app_password:
-            return jsonify({"error": "App password is required"}), 400
+        if not _has_smtp_auth(data):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Gmail sign-in required: use Google OAuth in the app, "
+                            "configure server OAuth env vars, or provide an app password."
+                        )
+                    }
+                ),
+                400,
+            )
 
         if not job_title:
             return jsonify({"error": "Job title is required"}), 400
@@ -362,10 +448,7 @@ def test_email():
         body = email_template.format(greeting=greeting, job_title=job_title)
 
         try:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.login(sender_email, app_password)
+            with _gmail_smtp_session(sender_email, data) as smtp:
                 send_one(
                     smtp,
                     sender_email,
@@ -376,12 +459,12 @@ def test_email():
                     attachment_filename=pdf_filename,
                 )
 
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": f"Test email sent successfully to {test_email}",
-                    }
-                )
+            return jsonify(
+                {
+                    "success": True,
+                    "message": f"Test email sent successfully to {test_email}",
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to send test email: {e}")
             return jsonify({"error": f"Failed to send email: {str(e)}"}), 500

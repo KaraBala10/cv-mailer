@@ -13,6 +13,8 @@ function App() {
   const [results, setResults] = useState(null);
   const [senderEmail, setSenderEmail] = useState("");
   const [appPassword, setAppPassword] = useState("");
+  const [oauthAccessToken, setOauthAccessToken] = useState("");
+  const [googleOAuthReady, setGoogleOAuthReady] = useState(false);
   const [jobTitle, setJobTitle] = useState("Software Engineer and Developer");
   const [subject, setSubject] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
@@ -37,6 +39,60 @@ function App() {
       setSubject(config.subject || "");
     }
   }, [config]);
+
+  const googleClientId =
+    config?.google_oauth_client_id ||
+    process.env.REACT_APP_GOOGLE_OAUTH_CLIENT_ID ||
+    "";
+  const serverOauthConfigured = Boolean(config?.server_oauth_configured);
+
+  useEffect(() => {
+    if (!googleClientId) {
+      setGoogleOAuthReady(false);
+      return;
+    }
+    let cancelled = false;
+    const waitForGoogle = () => {
+      if (cancelled) return;
+      if (window.google?.accounts?.oauth2) {
+        setGoogleOAuthReady(true);
+        return;
+      }
+      setTimeout(waitForGoogle, 50);
+    };
+    waitForGoogle();
+    return () => {
+      cancelled = true;
+    };
+  }, [googleClientId]);
+
+  const requestGoogleAccessToken = () => {
+    if (!googleClientId || !window.google?.accounts?.oauth2) {
+      showNotification(
+        "Google Sign-In is not available yet. Try again.",
+        "warning",
+      );
+      return;
+    }
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: googleClientId,
+      scope: "https://mail.google.com/",
+      callback: (tokenResponse) => {
+        if (tokenResponse.error) {
+          showNotification(
+            tokenResponse.error_description || tokenResponse.error,
+            "error",
+          );
+          return;
+        }
+        if (tokenResponse.access_token) {
+          setOauthAccessToken(tokenResponse.access_token);
+          showNotification("Signed in with Google", "success");
+        }
+      },
+    });
+    client.requestAccessToken({ prompt: "" });
+  };
 
   const fetchConfig = async () => {
     try {
@@ -74,7 +130,7 @@ function App() {
     if (validRecipients.length === 0) {
       showNotification(
         "Please add at least one recipient email address",
-        "warning"
+        "warning",
       );
       return;
     }
@@ -84,8 +140,17 @@ function App() {
       return;
     }
 
-    if (!appPassword.trim()) {
-      showNotification("Please enter your app password", "warning");
+    const hasGoogleToken = Boolean(oauthAccessToken.trim());
+    const hasAppPassword = Boolean(appPassword.trim());
+    if (serverOauthConfigured) {
+      // API uses refresh token from env; no password or browser token.
+    } else if (googleClientId) {
+      if (!hasGoogleToken) {
+        showNotification('Click "Sign in with Google" first.', "warning");
+        return;
+      }
+    } else if (!hasAppPassword) {
+      showNotification("Please enter your Gmail app password.", "warning");
       return;
     }
 
@@ -145,10 +210,16 @@ function App() {
           }));
 
           try {
+            const authFields = serverOauthConfigured
+              ? {}
+              : oauthAccessToken.trim()
+                ? { oauth_access_token: oauthAccessToken.trim() }
+                : { app_password: appPassword.trim() };
+
             const response = await axios.post(`${API_BASE_URL}/send-single`, {
               recipient: recipient,
               sender_email: senderEmail.trim(),
-              app_password: appPassword.trim(),
+              ...authFields,
               job_title: jobTitle.trim(),
               subject: subject.trim(),
               pdf_file: base64Pdf,
@@ -213,14 +284,14 @@ function App() {
           successful === validRecipients.length
             ? "success"
             : failed > 0
-            ? "warning"
-            : "success"
+              ? "warning"
+              : "success",
         );
       } catch (error) {
         console.error("Failed to send emails:", error);
         showNotification(
           `Error: ${error.response?.data?.error || error.message}`,
-          "error"
+          "error",
         );
       } finally {
         setLoading(false);
@@ -258,30 +329,65 @@ function App() {
                 required
               />
             </div>
-            <div className="form-group">
-              <label htmlFor="app-password">App Password *</label>
-              <input
-                id="app-password"
-                type="password"
-                placeholder="Enter your Gmail App Password"
-                value={appPassword}
-                onChange={(e) => setAppPassword(e.target.value)}
-                className="input"
-                required
-              />
-              <small className="help-text">
-                <strong>Note:</strong> This is NOT your Gmail password. You need
-                to create an App Password from Google Account settings.{" "}
-                <a
-                  href="https://www.youtube.com/watch?v=weA4yBSUMXs"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="help-link"
-                >
-                  Watch tutorial video
-                </a>
-              </small>
-            </div>
+            {serverOauthConfigured && (
+              <div className="form-group">
+                <p className="help-text">
+                  Gmail is authenticated on the server (OAuth). Use the same
+                  Gmail address as <strong>Sender Email</strong> as the account
+                  you authorized with the refresh token.
+                </p>
+              </div>
+            )}
+
+            {!serverOauthConfigured && googleClientId && (
+              <div className="form-group">
+                <label>Google account *</label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                  <button
+                    type="button"
+                    className="btn btn-add"
+                    onClick={requestGoogleAccessToken}
+                    disabled={!googleOAuthReady || loading}
+                  >
+                    {oauthAccessToken
+                      ? "Re-authorize Gmail"
+                      : "Sign in with Google"}
+                  </button>
+                  {oauthAccessToken && (
+                    <span className="help-text success-text">
+                      Gmail access granted (token in memory only)
+                    </span>
+                  )}
+                </div>
+                <small className="help-text">
+                  Uses OAuth2 for Gmail SMTP (scope{" "}
+                  <code>https://mail.google.com/</code>). Your Google password
+                  is never sent to this app.
+                </small>
+              </div>
+            )}
+
+            {!serverOauthConfigured && !googleClientId && (
+              <div className="form-group">
+                <label htmlFor="app-password">App password *</label>
+                <input
+                  id="app-password"
+                  type="password"
+                  placeholder="Gmail App Password"
+                  value={appPassword}
+                  onChange={(e) => setAppPassword(e.target.value)}
+                  className="input"
+                  required
+                />
+                <small className="help-text">
+                  Not your normal Gmail password. Create an App Password in
+                  Google Account settings, or set{" "}
+                  <code>GOOGLE_OAUTH_WEB_CLIENT_ID</code> on the API (and{" "}
+                  <code>REACT_APP_GOOGLE_OAUTH_CLIENT_ID</code> for static
+                  hosting) to use Sign in with Google instead.
+                </small>
+              </div>
+            )}
             <div className="form-group">
               <label htmlFor="job-title">Job Title *</label>
               <input
