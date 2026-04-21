@@ -24,8 +24,9 @@ SMTP_SERVER: str = "smtp.gmail.com"
 SMTP_PORT: int = 587
 SEND_DELAY: float = 1.0  # Delay between emails in seconds
 
-# File Paths (Static)
-TEMPLATE_PATH: str = "email_template.html"
+# File Paths (Static) — resolve against this file so WSGI/cron jobs work when CWD != project root
+_PROJECT_DIR = Path(__file__).resolve().parent
+TEMPLATE_PATH: str = str(_PROJECT_DIR / "email_template.html")
 
 # Recipients List - Add company name for personalized greetings
 RECIPIENTS: List[Dict[str, str]] = [
