@@ -367,20 +367,16 @@ function App() {
               <div className="form-group">
                 <label>Google account *</label>
                 <div className="google-auth-row">
-                  <button
-                    type="button"
-                    className="btn btn-add"
-                    onClick={requestGoogleAccessToken}
-                    disabled={
-                      !googleOAuthReady ||
-                      loading ||
-                      Boolean(oauthAccessToken.trim())
-                    }
-                  >
-                    {oauthAccessToken.trim()
-                      ? "Logged in"
-                      : "Sign in with Google"}
-                  </button>
+                  {!oauthAccessToken.trim() ? (
+                    <button
+                      type="button"
+                      className="btn btn-add"
+                      onClick={requestGoogleAccessToken}
+                      disabled={!googleOAuthReady || loading}
+                    >
+                      Sign in with Google
+                    </button>
+                  ) : null}
                   {oauthAccessToken.trim() && (
                     <>
                       {googleUser === null && (
