@@ -329,15 +329,6 @@ function App() {
         <div className="card">
           <h2>Email Configuration</h2>
           <div className="config-form">
-            {serverOauthConfigured && (
-              <div className="form-group">
-                <p className="help-text">
-                  Gmail is authenticated on the server (OAuth). The sending
-                  address is taken from the authorized Google account.
-                </p>
-              </div>
-            )}
-
             {googleClientId && (
               <div className="form-group">
                 <label>Google account *</label>
@@ -352,23 +343,7 @@ function App() {
                       ? "Re-authorize Gmail"
                       : "Sign in with Google"}
                   </button>
-                  {oauthAccessToken && (
-                    <span className="help-text success-text">
-                      Gmail access granted (token in memory only)
-                    </span>
-                  )}
                 </div>
-                <small className="help-text">
-                  {serverOauthConfigured
-                    ? "If server OAuth fails (e.g. unauthorized_client), sign in here — your access token is sent with each send and overrides the server refresh token."
-                    : "Uses OAuth2 for Gmail SMTP (scope "}
-                  {!serverOauthConfigured && (
-                    <>
-                      <code>https://mail.google.com/</code>). Your Google
-                      password is never sent to this app.
-                    </>
-                  )}
-                </small>
               </div>
             )}
 
@@ -394,13 +369,6 @@ function App() {
                   className="input"
                   required
                 />
-                <small className="help-text">
-                  Not your normal Gmail password. Create an App Password in
-                  Google Account settings, or set{" "}
-                  <code>GOOGLE_OAUTH_WEB_CLIENT_ID</code> on the API (and{" "}
-                  <code>REACT_APP_GOOGLE_OAUTH_CLIENT_ID</code> for static
-                  hosting) to use Sign in with Google instead.
-                </small>
               </div>
             )}
             <div className="form-group">
@@ -414,9 +382,6 @@ function App() {
                 className="input"
                 required
               />
-              <small className="help-text">
-                This will appear in your email template
-              </small>
             </div>
             <div className="form-group">
               <label htmlFor="subject">Email Subject *</label>
@@ -453,12 +418,9 @@ function App() {
               />
               {pdfFileName && (
                 <small className="help-text success-text">
-                  ✓ Selected: {pdfFileName}
+                  ✓ {pdfFileName}
                 </small>
               )}
-              <small className="help-text">
-                Select your CV/Resume PDF file to attach
-              </small>
             </div>
             <div className="form-group">
               <label htmlFor="name">Your Name *</label>
@@ -471,9 +433,6 @@ function App() {
                 className="input"
                 required
               />
-              <small className="help-text">
-                This will appear in your email template
-              </small>
             </div>
             <div className="form-group">
               <label htmlFor="phone-number">Phone Number *</label>
@@ -486,10 +445,6 @@ function App() {
                 className="input"
                 required
               />
-              <small className="help-text">
-                Enter your phone number (digits only, no spaces or dashes) for
-                WhatsApp link
-              </small>
             </div>
           </div>
         </div>
