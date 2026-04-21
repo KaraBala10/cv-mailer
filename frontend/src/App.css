@@ -487,6 +487,23 @@
   text-decoration: underline;
 }
 
+.oauth-missing-notice {
+  padding: 12px 14px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  color: #92400e;
+  line-height: 1.45;
+}
+
+.oauth-missing-notice code {
+  font-size: 0.8125rem;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 /* Google sign-in status */
 .google-auth-row {
   display: flex;

@@ -15,9 +15,6 @@ function App() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
-  /** Gmail address — only used with legacy app-password auth (OAuth infers address on the server). */
-  const [appPasswordGmail, setAppPasswordGmail] = useState("");
-  const [appPassword, setAppPassword] = useState("");
   const [oauthAccessToken, setOauthAccessToken] = useState("");
   /**
    * Google profile: undefined = signed out, null = loading userinfo, object = result.
@@ -54,13 +51,11 @@ function App() {
     "";
   const serverOauthConfigured = Boolean(config?.server_oauth_configured);
   const hasBrowserGoogleToken = Boolean(oauthAccessToken.trim());
-  /** Google client in use → must sign in in the browser. Server-only or app-password paths skip this. */
+  const oauthConfigured =
+    Boolean(googleClientId) || serverOauthConfigured;
   const authReadyForSend =
     (Boolean(googleClientId) && hasBrowserGoogleToken) ||
-    (!googleClientId && serverOauthConfigured) ||
-    (!googleClientId &&
-      !serverOauthConfigured &&
-      Boolean(appPasswordGmail.trim() && appPassword.trim()));
+    (!googleClientId && serverOauthConfigured);
 
   useEffect(() => {
     if (!googleClientId) {
@@ -284,14 +279,11 @@ function App() {
     } else if (serverOauthConfigured) {
       // API uses refresh token from env only.
     } else {
-      if (!appPasswordGmail.trim()) {
-        showNotification("Please enter your Gmail address.", "warning");
-        return;
-      }
-      if (!appPassword.trim()) {
-        showNotification("Please enter your Gmail app password.", "warning");
-        return;
-      }
+      showNotification(
+        "Google OAuth is not configured for this app.",
+        "error",
+      );
+      return;
     }
 
     if (!jobTitle.trim()) {
@@ -352,16 +344,11 @@ function App() {
           try {
             const authFields = oauthAccessToken.trim()
               ? { oauth_access_token: oauthAccessToken.trim() }
-              : serverOauthConfigured
-                ? {}
-                : { app_password: appPassword.trim() };
-
-            const senderFromOAuth =
-              serverOauthConfigured || Boolean(oauthAccessToken.trim());
+              : {};
 
             const response = await axios.post(`${API_BASE_URL}/send-single`, {
               recipient: recipient,
-              sender_email: senderFromOAuth ? "" : appPasswordGmail.trim(),
+              sender_email: "",
               ...authFields,
               job_title: jobTitle.trim(),
               subject: subject.trim(),
@@ -538,28 +525,14 @@ function App() {
               </div>
             )}
 
-            {!serverOauthConfigured && !googleClientId && (
-              <div className="form-group">
-                <label htmlFor="app-password-gmail">Gmail address *</label>
-                <input
-                  id="app-password-gmail"
-                  type="email"
-                  placeholder="your-email@gmail.com"
-                  value={appPasswordGmail}
-                  onChange={(e) => setAppPasswordGmail(e.target.value)}
-                  className="input"
-                  required
-                />
-                <label htmlFor="app-password">App password *</label>
-                <input
-                  id="app-password"
-                  type="password"
-                  placeholder="Gmail App Password"
-                  value={appPassword}
-                  onChange={(e) => setAppPassword(e.target.value)}
-                  className="input"
-                  required
-                />
+            {config && !oauthConfigured && (
+              <div className="form-group oauth-missing-notice">
+                <p>
+                  Google OAuth is not configured. Set{" "}
+                  <code>GOOGLE_OAUTH_WEB_CLIENT_ID</code> (or{" "}
+                  <code>GMAIL_OAUTH_CLIENT_ID</code> on the API) and/or server
+                  Gmail OAuth env vars.
+                </p>
               </div>
             )}
             <div className="form-group">

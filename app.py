@@ -59,8 +59,6 @@ def _has_smtp_auth(data: dict) -> bool:
         return True
     if _server_oauth_env_configured():
         return True
-    if (data.get("app_password") or "").strip():
-        return True
     return False
 
 
@@ -121,17 +119,13 @@ def _smtp_login_gmail(
         if oauth_access_token is not None
         else _resolve_gmail_access_token(data)
     )
-    app_password = (data.get("app_password") or "").strip()
     if access_token:
         smtp_auth_xoauth2(smtp, sender_email, access_token)
         return
-    if app_password:
-        smtp.login(sender_email, app_password)
-        return
     raise RuntimeError(
-        "Gmail authentication required: use Sign in with Google, set "
+        "Gmail authentication required: Sign in with Google in the app or set "
         "GMAIL_OAUTH_REFRESH_TOKEN + GMAIL_OAUTH_CLIENT_ID + GMAIL_OAUTH_CLIENT_SECRET "
-        "on the server, or provide app_password."
+        "on the server."
     )
 
 
@@ -204,8 +198,8 @@ def send_emails():
                 jsonify(
                     {
                         "error": (
-                            "Gmail sign-in required: use Google OAuth in the app, "
-                            "configure server OAuth env vars, or provide an app password."
+                            "Gmail sign-in required: use Google OAuth in the app or "
+                            "configure server OAuth env vars (refresh token + client id/secret)."
                         )
                     }
                 ),
@@ -361,8 +355,8 @@ def send_single_email():
                     {
                         "success": False,
                         "error": (
-                            "Gmail sign-in required: use Google OAuth in the app, "
-                            "configure server OAuth env vars, or provide an app password."
+                            "Gmail sign-in required: use Google OAuth in the app or "
+                            "configure server OAuth env vars (refresh token + client id/secret)."
                         ),
                     }
                 ),
@@ -491,8 +485,8 @@ def test_email():
                 jsonify(
                     {
                         "error": (
-                            "Gmail sign-in required: use Google OAuth in the app, "
-                            "configure server OAuth env vars, or provide an app password."
+                            "Gmail sign-in required: use Google OAuth in the app or "
+                            "configure server OAuth env vars (refresh token + client id/secret)."
                         )
                     }
                 ),
