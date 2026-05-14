@@ -51,8 +51,7 @@ function App() {
     "";
   const serverOauthConfigured = Boolean(config?.server_oauth_configured);
   const hasBrowserGoogleToken = Boolean(oauthAccessToken.trim());
-  const oauthConfigured =
-    Boolean(googleClientId) || serverOauthConfigured;
+  const oauthConfigured = Boolean(googleClientId) || serverOauthConfigured;
   const authReadyForSend =
     (Boolean(googleClientId) && hasBrowserGoogleToken) ||
     (!googleClientId && serverOauthConfigured);
@@ -279,10 +278,7 @@ function App() {
     } else if (serverOauthConfigured) {
       // API uses refresh token from env only.
     } else {
-      showNotification(
-        "Google OAuth is not configured for this app.",
-        "error",
-      );
+      showNotification("Google OAuth is not configured for this app.", "error");
       return;
     }
 
@@ -602,10 +598,15 @@ function App() {
               <label htmlFor="phone-number">Phone Number *</label>
               <input
                 id="phone-number"
-                type="tel"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="tel"
                 placeholder="e.g., 963949257963 (digits only)"
                 value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
+                onChange={(e) =>
+                  setPhoneNumber(e.target.value.replace(/\D/g, ""))
+                }
                 className="input"
                 required
               />
