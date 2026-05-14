@@ -21,7 +21,7 @@ function App() {
    */
   const [googleUser, setGoogleUser] = useState(undefined);
   const [googleOAuthReady, setGoogleOAuthReady] = useState(false);
-  const [jobTitle, setJobTitle] = useState("Software Engineer and Developer");
+  const [jobTitle, setJobTitle] = useState("");
   const [subject, setSubject] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [pdfFileName, setPdfFileName] = useState("");
@@ -40,7 +40,7 @@ function App() {
 
   useEffect(() => {
     if (config) {
-      setJobTitle(config.job_title || "Software Engineer and Developer");
+      setJobTitle((config.job_title || "").trim());
       setSubject(config.subject || "");
     }
   }, [config]);
@@ -540,7 +540,7 @@ function App() {
               <input
                 id="job-title"
                 type="text"
-                placeholder="e.g., Software Engineer and Developer"
+                placeholder="e.g., Senior Consultant — type your title here"
                 value={jobTitle}
                 onChange={(e) => setJobTitle(e.target.value)}
                 className="input"

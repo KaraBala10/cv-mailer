@@ -163,7 +163,7 @@ def get_config():
             "smtp_server": SMTP_SERVER,
             "smtp_port": SMTP_PORT,
             "send_delay": SEND_DELAY,
-            "job_title": "Software Engineer and Developer",  # Default job title
+            "job_title": "",  # User enters in UI; empty default
             "subject": "",  # Empty default, user will provide
             "server_oauth_configured": _server_oauth_env_configured(),
             "google_oauth_client_id": (
