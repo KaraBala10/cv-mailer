@@ -22,16 +22,9 @@ from flask import Flask, jsonify, request
 load_dotenv(Path(__file__).resolve().parent / ".env")
 from flask_cors import CORS
 
-from code_sender import (
-    SEND_DELAY,
-    SMTP_PORT,
-    SMTP_SERVER,
-    TEMPLATE_PATH,
-    create_greeting,
-    load_email_template,
-    send_one,
-    validate_configuration,
-)
+from code_sender import (SEND_DELAY, SMTP_PORT, SMTP_SERVER, TEMPLATE_PATH,
+                         create_greeting, load_email_template, send_one,
+                         validate_configuration)
 from gmail_oauth import access_token_from_refresh_token, smtp_auth_xoauth2
 
 app = Flask(__name__)
@@ -99,12 +92,16 @@ def _resolve_sender_and_oauth_token(data: dict) -> tuple[str, str | None]:
     """
     Sender is required for SMTP / MIME unless we can derive it via OAuth userinfo.
     Returns (sender_email, oauth_access_token) with the token reused for SMTP when present.
+
+    With OAuth, the From address always comes from Google userinfo for that access
+    token so it matches XOAUTH2 (client sender_email is ignored).
     """
     oauth_token = _resolve_gmail_access_token(data)
-    sender = (data.get("sender_email") or "").strip()
-    if not sender and oauth_token:
+    if oauth_token:
         sender = _email_from_google_access_token(oauth_token) or ""
-    return sender, oauth_token
+        return sender, oauth_token
+    sender = (data.get("sender_email") or "").strip()
+    return sender, None
 
 
 def _smtp_login_gmail(
@@ -537,7 +534,17 @@ def test_email():
 
         recipient = {"email": test_email_addr, "company": data.get("company", "")}
         greeting = create_greeting(recipient)
-        body = email_template.format(greeting=greeting, job_title=job_title)
+        name = (data.get("name") or "").strip() or sender_email
+        phone_number = "".join(
+            ch for ch in (data.get("phone_number") or "") if ch.isdigit()
+        )
+        body = email_template.format(
+            greeting=greeting,
+            job_title=job_title,
+            name=name,
+            phone_number=phone_number,
+            email=sender_email,
+        )
 
         try:
             with _gmail_smtp_session(
