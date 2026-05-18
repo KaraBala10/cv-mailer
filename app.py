@@ -14,7 +14,9 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from html import escape
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -22,9 +24,16 @@ from flask import Flask, jsonify, request
 load_dotenv(Path(__file__).resolve().parent / ".env")
 from flask_cors import CORS
 
-from code_sender import (SEND_DELAY, SMTP_PORT, SMTP_SERVER, TEMPLATE_PATH,
-                         create_greeting, load_email_template, send_one,
-                         validate_configuration)
+from code_sender import (
+    SEND_DELAY,
+    SMTP_PORT,
+    SMTP_SERVER,
+    TEMPLATE_PATH,
+    create_greeting,
+    load_email_template,
+    send_one,
+    validate_configuration,
+)
 from gmail_oauth import access_token_from_refresh_token, smtp_auth_xoauth2
 
 app = Flask(__name__)
@@ -37,6 +46,24 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _portfolio_section(portfolio_link: str) -> str:
+    """HTML snippet for an optional portfolio URL; empty if missing or unsafe."""
+    raw = (portfolio_link or "").strip()
+    if not raw:
+        return ""
+    if not urlparse(raw).scheme:
+        raw = "https://" + raw
+    if urlparse(raw).scheme not in ("http", "https"):
+        return ""
+    safe_href = escape(raw, quote=True)
+    return (
+        '<p style="margin: 8px 0 0 0; font-size: 15px;">'
+        f'<a href="{safe_href}" style="color: #1a2744; text-decoration: none; '
+        'border-bottom: 1px solid #c5a572;">Portfolio</a>'
+        "</p>"
+    )
 
 
 def _server_oauth_env_configured() -> bool:
@@ -186,6 +213,7 @@ def send_emails():
         pdf_filename = data.get("pdf_filename", "CV.pdf")
         name = data.get("name", "").strip()
         phone_number = data.get("phone_number", "").strip()
+        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
 
         if not recipients:
             return jsonify({"error": "No recipients provided"}), 400
@@ -271,6 +299,7 @@ def send_emails():
                         name=name,
                         phone_number=phone_number,
                         email=sender_email,
+                        portfolio_section=portfolio_section,
                     )
 
                     try:
@@ -339,6 +368,7 @@ def send_single_email():
         pdf_filename = data.get("pdf_filename", "CV.pdf")
         name = data.get("name", "").strip()
         phone_number = data.get("phone_number", "").strip()
+        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
 
         if not to_email:
             return (
@@ -429,6 +459,7 @@ def send_single_email():
             name=name,
             phone_number=phone_number,
             email=sender_email,
+            portfolio_section=portfolio_section,
         )
 
         try:
@@ -538,12 +569,14 @@ def test_email():
         phone_number = "".join(
             ch for ch in (data.get("phone_number") or "") if ch.isdigit()
         )
+        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
         body = email_template.format(
             greeting=greeting,
             job_title=job_title,
             name=name,
             phone_number=phone_number,
             email=sender_email,
+            portfolio_section=portfolio_section,
         )
 
         try:

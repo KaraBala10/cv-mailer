@@ -27,6 +27,7 @@ function App() {
   const [pdfFileName, setPdfFileName] = useState("");
   const [name, setName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [portfolioLink, setPortfolioLink] = useState("");
   const [notification, setNotification] = useState({
     show: false,
     message: "",
@@ -352,6 +353,7 @@ function App() {
               pdf_filename: pdfFileName || pdfFile.name,
               name: name.trim(),
               phone_number: phoneNumber.trim().replace(/\D/g, ""), // Remove non-digits
+              portfolio_link: portfolioLink.trim(),
             });
 
             if (response.data.success) {
@@ -611,6 +613,18 @@ function App() {
                 required
               />
             </div>
+            <div className="form-group">
+              <label htmlFor="portfolio-link">Portfolio link (optional)</label>
+              <input
+                id="portfolio-link"
+                type="url"
+                inputMode="url"
+                placeholder="https://your-site.com"
+                value={portfolioLink}
+                onChange={(e) => setPortfolioLink(e.target.value)}
+                className="input"
+              />
+            </div>
           </div>
         </div>
 
@@ -740,7 +754,7 @@ function App() {
           <p>
             This site made by{" "}
             <a
-              href="https://github.com/KaraBala10"
+              href="https://https://karabala-portfolio.vercel.app/"
               target="_blank"
               rel="noopener noreferrer"
               className="footer-link"
