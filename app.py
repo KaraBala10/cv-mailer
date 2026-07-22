@@ -10,11 +10,9 @@ import json
 import logging
 import os
 import re
-import smtplib
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
 from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +25,7 @@ from flask_cors import CORS
 
 from code_sender import (
     SEND_DELAY,
+    SEND_METHOD,
     SMTP_PORT,
     SMTP_SERVER,
     TEMPLATE_PATH,
@@ -35,7 +34,7 @@ from code_sender import (
     send_one,
     validate_configuration,
 )
-from gmail_oauth import access_token_from_refresh_token, smtp_auth_xoauth2
+from gmail_oauth import access_token_from_refresh_token
 
 # Gmail rejects messages larger than 25 MB; keep a margin for MIME/base64 overhead.
 MAX_PDF_BYTES = 15 * 1024 * 1024
@@ -130,12 +129,16 @@ def _server_oauth_env_configured() -> bool:
     )
 
 
-def _has_smtp_auth(data: dict) -> bool:
+def _has_gmail_auth(data: dict) -> bool:
     if (data.get("oauth_access_token") or "").strip():
         return True
     if _server_oauth_env_configured():
         return True
     return False
+
+
+# Back-compat alias for older call sites / mental model.
+_has_smtp_auth = _has_gmail_auth
 
 
 def _resolve_gmail_access_token(data: dict) -> str | None:
@@ -152,7 +155,7 @@ def _resolve_gmail_access_token(data: dict) -> str | None:
 
 
 def _email_from_google_access_token(access_token: str) -> str:
-    """Resolve the Google account email for XOAUTH2 / From header (requires userinfo scope)."""
+    """Resolve the Google account email for the From header (requires userinfo scope)."""
     req = urllib.request.Request(
         "https://www.googleapis.com/oauth2/v3/userinfo",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -173,11 +176,10 @@ def _email_from_google_access_token(access_token: str) -> str:
 
 def _resolve_sender_and_oauth_token(data: dict) -> tuple[str, str | None]:
     """
-    Sender is required for SMTP / MIME unless we can derive it via OAuth userinfo.
-    Returns (sender_email, oauth_access_token) with the token reused for SMTP when present.
+    Resolve sender email + OAuth access token for Gmail API send.
 
     With OAuth, the From address always comes from Google userinfo for that access
-    token so it matches XOAUTH2 (client sender_email is ignored).
+    token (client sender_email is ignored).
     """
     oauth_token = _resolve_gmail_access_token(data)
     if oauth_token:
@@ -185,50 +187,6 @@ def _resolve_sender_and_oauth_token(data: dict) -> tuple[str, str | None]:
         return sender, oauth_token
     sender = (data.get("sender_email") or "").strip()
     return sender, None
-
-
-def _smtp_login_gmail(
-    smtp: smtplib.SMTP,
-    sender_email: str,
-    data: dict,
-    *,
-    oauth_access_token: str | None = None,
-) -> None:
-    access_token = (
-        oauth_access_token
-        if oauth_access_token is not None
-        else _resolve_gmail_access_token(data)
-    )
-    if access_token:
-        smtp_auth_xoauth2(smtp, sender_email, access_token)
-        return
-    raise RuntimeError(
-        "Gmail authentication required: Sign in with Google in the app or set "
-        "GMAIL_OAUTH_REFRESH_TOKEN + GMAIL_OAUTH_CLIENT_ID + GMAIL_OAUTH_CLIENT_SECRET "
-        "on the server."
-    )
-
-
-@contextmanager
-def _gmail_smtp_session(
-    sender_email: str,
-    data: dict,
-    *,
-    oauth_access_token: str | None = None,
-):
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-        logger.info("Connecting to %s:%s", SMTP_SERVER, SMTP_PORT)
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.ehlo()
-        _smtp_login_gmail(
-            smtp,
-            sender_email,
-            data,
-            oauth_access_token=oauth_access_token,
-        )
-        logger.info("Successfully authenticated with SMTP server")
-        yield smtp
 
 
 class SendRequestError(Exception):
@@ -248,7 +206,7 @@ class SendContext:
         *,
         data: dict,
         sender_email: str,
-        oauth_for_smtp: str | None,
+        oauth_access_token: str,
         job_title: str,
         subject: str,
         name: str,
@@ -260,7 +218,7 @@ class SendContext:
     ):
         self.data = data
         self.sender_email = sender_email
-        self.oauth_for_smtp = oauth_for_smtp
+        self.oauth_access_token = oauth_access_token
         self.job_title = job_title
         self.subject = subject
         self.name = name
@@ -282,12 +240,16 @@ class SendContext:
             portfolio_section=self.portfolio_section,
         )
 
-    @contextmanager
-    def smtp(self):
-        with _gmail_smtp_session(
-            self.sender_email, self.data, oauth_access_token=self.oauth_for_smtp
-        ) as smtp:
-            yield smtp
+    def send_to(self, to_email: str, body: str) -> None:
+        send_one(
+            self.oauth_access_token,
+            self.sender_email,
+            to_email,
+            self.subject,
+            body,
+            attachment_data=self.pdf_data,
+            attachment_filename=self.pdf_filename,
+        )
 
 
 def _build_send_context(data: dict, *, require_name_phone: bool = True) -> SendContext:
@@ -295,13 +257,19 @@ def _build_send_context(data: dict, *, require_name_phone: bool = True) -> SendC
     Resolve auth + sender, validate shared fields, decode the PDF, and load the template.
     Raises SendRequestError on any validation failure.
     """
-    if not _has_smtp_auth(data):
+    if not _has_gmail_auth(data):
         raise SendRequestError(
             "Gmail sign-in required: use Google OAuth in the app or "
             "configure server OAuth env vars (refresh token + client id/secret)."
         )
 
-    sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
+    sender_email, oauth_access_token = _resolve_sender_and_oauth_token(data)
+    if not oauth_access_token:
+        raise SendRequestError(
+            "Gmail authentication required: Sign in with Google in the app or set "
+            "GMAIL_OAUTH_REFRESH_TOKEN + GMAIL_OAUTH_CLIENT_ID + GMAIL_OAUTH_CLIENT_SECRET "
+            "on the server."
+        )
     if not sender_email:
         raise SendRequestError(
             "Sender email is required (or sign in with Google so we can "
@@ -341,7 +309,7 @@ def _build_send_context(data: dict, *, require_name_phone: bool = True) -> SendC
     return SendContext(
         data=data,
         sender_email=sender_email,
-        oauth_for_smtp=oauth_for_smtp,
+        oauth_access_token=oauth_access_token,
         job_title=job_title,
         subject=subject,
         name=name,
@@ -361,10 +329,11 @@ def health_check():
 
 @app.route("/api/config", methods=["GET"])
 def get_config():
-    """Get current configuration (static SMTP settings)."""
+    """Get current configuration for the UI."""
     return jsonify(
         {
             "template_path": TEMPLATE_PATH,
+            "send_method": SEND_METHOD,
             "smtp_server": SMTP_SERVER,
             "smtp_port": SMTP_PORT,
             "send_delay": SEND_DELAY,
@@ -432,7 +401,7 @@ def preview_email():
 
 @app.route("/api/recipients", methods=["POST"])
 def send_emails():
-    """Send emails to a list of recipients over a single SMTP session."""
+    """Send emails to a list of recipients via the Gmail API."""
     try:
         data = request.get_json() or {}
         recipients = data.get("recipients", [])
@@ -448,70 +417,56 @@ def send_emails():
         successful_sends = 0
         failed_sends = 0
 
-        try:
-            with ctx.smtp() as smtp:
-                for recipient in recipients:
-                    to_email = (recipient.get("email") or "").strip()
-                    if not to_email:
-                        continue
-                    if not _is_valid_email(to_email):
-                        results.append(
-                            {
-                                "email": to_email,
-                                "status": "error",
-                                "message": "Invalid email address",
-                            }
-                        )
-                        failed_sends += 1
-                        continue
+        for recipient in recipients:
+            to_email = (recipient.get("email") or "").strip()
+            if not to_email:
+                continue
+            if not _is_valid_email(to_email):
+                results.append(
+                    {
+                        "email": to_email,
+                        "status": "error",
+                        "message": "Invalid email address",
+                    }
+                )
+                failed_sends += 1
+                continue
 
-                    body = ctx.render_for(recipient)
-                    try:
-                        logger.info(f"Sending email to: {to_email}")
-                        send_one(
-                            smtp,
-                            ctx.sender_email,
-                            to_email,
-                            ctx.subject,
-                            body,
-                            attachment_data=ctx.pdf_data,
-                            attachment_filename=ctx.pdf_filename,
-                        )
-                        logger.info(f"✅ Successfully sent to {to_email}")
-                        results.append(
-                            {
-                                "email": to_email,
-                                "status": "success",
-                                "message": "Email sent successfully",
-                            }
-                        )
-                        successful_sends += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to send to {to_email}: {e}")
-                        results.append(
-                            {"email": to_email, "status": "error", "message": str(e)}
-                        )
-                        failed_sends += 1
+            body = ctx.render_for(recipient)
+            try:
+                logger.info(f"Sending email to: {to_email}")
+                ctx.send_to(to_email, body)
+                logger.info(f"✅ Successfully sent to {to_email}")
+                results.append(
+                    {
+                        "email": to_email,
+                        "status": "success",
+                        "message": "Email sent successfully",
+                    }
+                )
+                successful_sends += 1
+            except Exception as e:
+                logger.error(f"❌ Failed to send to {to_email}: {e}")
+                results.append(
+                    {"email": to_email, "status": "error", "message": str(e)}
+                )
+                failed_sends += 1
 
-                    if len(recipients) > 1:
-                        time.sleep(SEND_DELAY)
+            if len(recipients) > 1:
+                time.sleep(SEND_DELAY)
 
-            return jsonify(
-                {
-                    "success": True,
-                    "message": f"Email sending completed. Success: {successful_sends}, Failed: {failed_sends}",
-                    "results": results,
-                    "summary": {
-                        "successful": successful_sends,
-                        "failed": failed_sends,
-                        "total": len(recipients),
-                    },
-                }
-            )
-
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP error: {e}")
-            return jsonify({"error": f"SMTP error: {str(e)}"}), 500
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Email sending completed. Success: {successful_sends}, Failed: {failed_sends}",
+                "results": results,
+                "summary": {
+                    "successful": successful_sends,
+                    "failed": failed_sends,
+                    "total": len(recipients),
+                },
+            }
+        )
 
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
@@ -544,17 +499,7 @@ def send_single_email():
 
         body = ctx.render_for(recipient)
         try:
-            with ctx.smtp() as smtp:
-                send_one(
-                    smtp,
-                    ctx.sender_email,
-                    to_email,
-                    ctx.subject,
-                    body,
-                    attachment_data=ctx.pdf_data,
-                    attachment_filename=ctx.pdf_filename,
-                )
-
+            ctx.send_to(to_email, body)
             return jsonify(
                 {
                     "success": True,
@@ -594,17 +539,7 @@ def test_email():
         body = ctx.render_for(recipient, fallback_name=ctx.sender_email)
 
         try:
-            with ctx.smtp() as smtp:
-                send_one(
-                    smtp,
-                    ctx.sender_email,
-                    test_email_addr,
-                    ctx.subject,
-                    body,
-                    attachment_data=ctx.pdf_data,
-                    attachment_filename=ctx.pdf_filename,
-                )
-
+            ctx.send_to(test_email_addr, body)
             return jsonify(
                 {
                     "success": True,

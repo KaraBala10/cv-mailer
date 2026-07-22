@@ -5,7 +5,6 @@ A professional email automation tool for sending CVs to potential employers.
 
 # Standard library imports
 import logging
-import smtplib
 
 # Email-related imports
 from email import encoders
@@ -15,13 +14,16 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Dict, Optional
 
+from gmail_oauth import send_mime_via_gmail_api
+
 # =============================================================================
 # STATIC CONFIGURATION CONSTANTS
 # =============================================================================
 
-# SMTP Configuration (Static - Gmail settings)
-SMTP_SERVER: str = "smtp.gmail.com"
-SMTP_PORT: int = 587
+# Legacy labels kept for /api/config clients; sending uses Gmail API over HTTPS.
+SMTP_SERVER: str = "gmail.googleapis.com"
+SMTP_PORT: int = 443
+SEND_METHOD: str = "gmail_api"
 SEND_DELAY: float = 1.0  # Delay between emails in seconds
 
 # File Paths (Static) — resolve against this file so WSGI/cron jobs work when CWD != project root
@@ -138,7 +140,7 @@ def build_message(
 
 
 def send_one(
-    smtp: smtplib.SMTP,
+    access_token: str,
     sender: str,
     recipient: str,
     subject: str,
@@ -148,10 +150,10 @@ def send_one(
     attachment_filename: Optional[str] = None,
 ) -> None:
     """
-    Send a single email message.
+    Send a single email via the Gmail API (HTTPS).
 
     Args:
-        smtp: SMTP server connection
+        access_token: Google OAuth access token with Gmail send permission
         sender: Email address of the sender
         recipient: Email address of the recipient
         subject: Email subject line
@@ -159,9 +161,6 @@ def send_one(
         attachment: Path to attachment file (optional, if attachment_data is not provided)
         attachment_data: File data as bytes (optional, if attachment is not provided)
         attachment_filename: Filename for attachment when using attachment_data
-
-    Raises:
-        smtplib.SMTPException: If email sending fails
     """
     msg = build_message(
         sender,
@@ -172,7 +171,10 @@ def send_one(
         attachment_data=attachment_data,
         attachment_filename=attachment_filename,
     )
-    smtp.sendmail(sender, [recipient], msg.as_string())
+    result = send_mime_via_gmail_api(access_token, msg.as_bytes())
+    message_id = result.get("id")
+    if message_id:
+        logger.info("Gmail API accepted message id=%s to %s", message_id, recipient)
 
 
 # =============================================================================
