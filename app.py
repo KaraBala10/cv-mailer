@@ -201,6 +201,57 @@ def get_config():
     )
 
 
+@app.route("/api/preview-email", methods=["POST"])
+def preview_email():
+    """Render the email HTML template for UI preview (no send)."""
+    try:
+        data = request.get_json() or {}
+        name = (data.get("name") or "").strip()
+        job_title = (data.get("job_title") or "").strip()
+        phone_number = "".join(
+            ch for ch in (data.get("phone_number") or "") if ch.isdigit()
+        )
+        sender_email = (data.get("email") or "").strip() or "you@example.com"
+        company = (data.get("company") or "").strip()
+        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
+
+        if not name:
+            return jsonify({"error": "Name is required"}), 400
+        if not job_title:
+            return jsonify({"error": "Job title is required"}), 400
+        if not phone_number:
+            return jsonify({"error": "Phone number is required"}), 400
+
+        try:
+            email_template = load_email_template(TEMPLATE_PATH)
+        except Exception as e:
+            return (
+                jsonify({"error": f"Template loading error: {str(e)}"}),
+                500,
+            )
+
+        greeting = create_greeting({"email": "", "company": company})
+        body = email_template.format(
+            greeting=greeting,
+            job_title=job_title,
+            name=name,
+            phone_number=phone_number,
+            email=sender_email,
+            portfolio_section=portfolio_section,
+        )
+
+        return jsonify(
+            {
+                "success": True,
+                "html": body,
+                "subject": (data.get("subject") or "").strip(),
+            }
+        )
+    except Exception as e:
+        logger.error(f"Preview email error: {e}")
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
+
 @app.route("/api/recipients", methods=["POST"])
 def send_emails():
     """Send emails to a list of recipients."""

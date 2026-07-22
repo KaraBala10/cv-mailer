@@ -34,10 +34,30 @@ function App() {
     type: "info",
   });
   const [recipientStatus, setRecipientStatus] = useState({});
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const canPreviewEmail = Boolean(
+    name.trim() && jobTitle.trim() && phoneNumber.trim(),
+  );
 
   useEffect(() => {
     fetchConfig();
   }, []);
+
+  useEffect(() => {
+    if (!showPreview) {
+      return;
+    }
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setShowPreview(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showPreview]);
 
   useEffect(() => {
     if (config) {
@@ -257,6 +277,40 @@ function App() {
     setTimeout(() => {
       setNotification({ show: false, message: "", type: "info" });
     }, 5000);
+  };
+
+  const openEmailPreview = async () => {
+    if (!canPreviewEmail) {
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const firstWithCompany = recipients.find((r) => r.company.trim());
+      const response = await axios.post(`${API_BASE_URL}/preview-email`, {
+        name: name.trim(),
+        job_title: jobTitle.trim(),
+        phone_number: phoneNumber.trim().replace(/\D/g, ""),
+        portfolio_link: portfolioLink.trim(),
+        subject: subject.trim(),
+        email:
+          (typeof googleUser === "object" && googleUser?.email) ||
+          "you@example.com",
+        company: firstWithCompany?.company?.trim() || "",
+      });
+      if (response.data?.html) {
+        setPreviewHtml(response.data.html);
+        setShowPreview(true);
+      } else {
+        showNotification("Could not load email preview", "error");
+      }
+    } catch (error) {
+      showNotification(
+        `Preview failed: ${error.response?.data?.error || error.message}`,
+        "error",
+      );
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   const sendEmails = async () => {
@@ -625,6 +679,16 @@ function App() {
                 className="input"
               />
             </div>
+            {canPreviewEmail && (
+              <button
+                type="button"
+                className="btn btn-preview"
+                onClick={openEmailPreview}
+                disabled={previewLoading || loading}
+              >
+                {previewLoading ? "Loading preview..." : "Preview Email"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -764,6 +828,44 @@ function App() {
           </p>
         </footer>
       </div>
+      {showPreview && (
+        <div
+          className="preview-overlay"
+          onClick={() => setShowPreview(false)}
+          role="presentation"
+        >
+          <div
+            className="preview-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-title"
+          >
+            <div className="preview-header">
+              <div>
+                <h2 id="preview-title">Email Preview</h2>
+                {subject.trim() && (
+                  <p className="preview-subject">Subject: {subject.trim()}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-preview-close"
+                onClick={() => setShowPreview(false)}
+                aria-label="Close preview"
+              >
+                ×
+              </button>
+            </div>
+            <iframe
+              title="Email preview"
+              className="preview-iframe"
+              srcDoc={previewHtml}
+              sandbox=""
+            />
+          </div>
+        </div>
+      )}
       <Notification
         show={notification.show}
         message={notification.message}
