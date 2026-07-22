@@ -91,6 +91,12 @@ function App() {
   const [googleOAuthReady, setGoogleOAuthReady] = useState(false);
   const [jobTitle, setJobTitle] = useState(storedForm.jobTitle || "");
   const [subject, setSubject] = useState(storedForm.subject || "");
+  // Once the user edits the subject, stop auto-deriving it from the name.
+  const [subjectEdited, setSubjectEdited] = useState(
+    storedForm.subjectEdited !== undefined
+      ? Boolean(storedForm.subjectEdited)
+      : Boolean((storedForm.subject || "").trim()),
+  );
   const [pdfFile, setPdfFile] = useState(null);
   const [pdfFileName, setPdfFileName] = useState("");
   const [name, setName] = useState(storedForm.name || "");
@@ -113,6 +119,7 @@ function App() {
   const [testSending, setTestSending] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [theme, setTheme] = useState(getInitialTheme);
+  const [showSignInModal, setShowSignInModal] = useState(false);
 
   const maxPdfBytes = config?.max_pdf_bytes || DEFAULT_MAX_PDF_BYTES;
 
@@ -133,6 +140,7 @@ function App() {
           name,
           jobTitle,
           subject,
+          subjectEdited,
           phoneNumber,
           portfolioLink,
           recipients,
@@ -141,7 +149,21 @@ function App() {
     } catch {
       /* ignore quota / private-mode errors */
     }
-  }, [name, jobTitle, subject, phoneNumber, portfolioLink, recipients]);
+  }, [
+    name,
+    jobTitle,
+    subject,
+    subjectEdited,
+    phoneNumber,
+    portfolioLink,
+    recipients,
+  ]);
+
+  // Auto-derive the subject from the name until the user edits it manually.
+  useEffect(() => {
+    if (subjectEdited) return;
+    setSubject(name.trim() ? `Job Application - ${name.trim()}` : "");
+  }, [name, subjectEdited]);
 
   // Apply + persist theme.
   useEffect(() => {
@@ -177,6 +199,27 @@ function App() {
   const authReadyForSend =
     (Boolean(googleClientId) && hasBrowserGoogleToken) ||
     (!googleClientId && serverOauthConfigured);
+  // Browser sign-in flow: lock the whole app until the user connects Google.
+  const mustSignIn = Boolean(googleClientId) && !hasBrowserGoogleToken;
+
+  // Show the sign-in prompt whenever a sign-in is required; hide it once signed in.
+  useEffect(() => {
+    setShowSignInModal(mustSignIn);
+  }, [mustSignIn]);
+
+  // While locked, any click anywhere re-opens the prompt if it was dismissed.
+  useEffect(() => {
+    if (!mustSignIn || showSignInModal) return;
+    const reopen = () => setShowSignInModal(true);
+    // Attach after the current click cycle so the dismissing click doesn't reopen it.
+    const id = setTimeout(() => {
+      document.addEventListener("click", reopen);
+    }, 0);
+    return () => {
+      clearTimeout(id);
+      document.removeEventListener("click", reopen);
+    };
+  }, [mustSignIn, showSignInModal]);
 
   useEffect(() => {
     if (!googleClientId) {
@@ -237,6 +280,11 @@ function App() {
           picture: (u.picture || "").trim(),
         };
         setGoogleUser(profile);
+        // Pre-fill the name from the Google account only when it's still empty,
+        // so a returning / edited value is never clobbered.
+        if (profile.name) {
+          setName((prev) => (prev.trim() ? prev : profile.name));
+        }
         try {
           sessionStorage.setItem(STORAGE_GOOGLE_USER, JSON.stringify(profile));
         } catch {
@@ -725,7 +773,7 @@ function App() {
 
   return (
     <div className="App">
-      <div className="container">
+      <div className={`container${mustSignIn ? " app-locked" : ""}`}>
         <header className="header">
           <button
             type="button"
@@ -850,7 +898,10 @@ function App() {
                 type="text"
                 placeholder="e.g., Job Application – Your Name"
                 value={subject}
-                onChange={(e) => setSubject(e.target.value)}
+                onChange={(e) => {
+                  setSubject(e.target.value);
+                  setSubjectEdited(true);
+                }}
                 className="input"
                 required
               />
@@ -1138,6 +1189,50 @@ function App() {
           </p>
         </footer>
       </div>
+
+      {mustSignIn && showSignInModal && (
+        <div
+          className="signin-overlay"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowSignInModal(false);
+          }}
+          role="presentation"
+        >
+          <div
+            className="signin-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="signin-title"
+          >
+            <div className="signin-icon" aria-hidden>
+              📧
+            </div>
+            <h2 id="signin-title">Sign in to get started</h2>
+            <p>
+              Connect your Gmail account to send applications. We'll use your
+              name to fill in the details — you can still edit everything
+              afterwards.
+            </p>
+            <button
+              type="button"
+              className="btn btn-send signin-btn"
+              onClick={requestGoogleAccessToken}
+              disabled={!googleOAuthReady}
+            >
+              {googleOAuthReady ? "Sign in with Google" : "Loading Google…"}
+            </button>
+            <button
+              type="button"
+              className="signin-dismiss"
+              onClick={() => setShowSignInModal(false)}
+            >
+              Maybe later
+            </button>
+          </div>
+        </div>
+      )}
 
       {showImport && (
         <div
