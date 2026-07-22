@@ -13,13 +13,35 @@
   width: 100%;
 }
 
-/* Locked state: the whole app is inert until the user signs in. */
-.app-locked {
-  pointer-events: none;
+/* Locked state: only the first card is inert until the user signs in. */
+.card-lock-wrap {
+  position: relative;
+}
+
+.locked-card {
   user-select: none;
   opacity: 0.55;
   filter: saturate(0.85);
   transition: opacity 0.2s ease;
+}
+
+.locked-card * {
+  pointer-events: none;
+}
+
+/* Transparent layer over the locked card: any click re-opens the sign-in prompt. */
+.card-lock-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--radius);
 }
 
 /* Sign-in gate */

@@ -207,20 +207,6 @@ function App() {
     setShowSignInModal(mustSignIn);
   }, [mustSignIn]);
 
-  // While locked, any click anywhere re-opens the prompt if it was dismissed.
-  useEffect(() => {
-    if (!mustSignIn || showSignInModal) return;
-    const reopen = () => setShowSignInModal(true);
-    // Attach after the current click cycle so the dismissing click doesn't reopen it.
-    const id = setTimeout(() => {
-      document.addEventListener("click", reopen);
-    }, 0);
-    return () => {
-      clearTimeout(id);
-      document.removeEventListener("click", reopen);
-    };
-  }, [mustSignIn, showSignInModal]);
-
   useEffect(() => {
     if (!googleClientId) {
       setGoogleOAuthReady(false);
@@ -773,7 +759,7 @@ function App() {
 
   return (
     <div className="App">
-      <div className={`container${mustSignIn ? " app-locked" : ""}`}>
+      <div className="container">
         <header className="header">
           <button
             type="button"
@@ -788,9 +774,10 @@ function App() {
           <p>Job Application Email Automation</p>
         </header>
 
-        <div className="card">
-          <h2>Email Configuration</h2>
-          <div className="config-form">
+        <div className="card-lock-wrap">
+          <div className={`card${mustSignIn ? " locked-card" : ""}`}>
+            <h2>Email Configuration</h2>
+            <div className="config-form">
             {googleClientId && (
               <div className="form-group">
                 <label>Google account *</label>
@@ -1015,6 +1002,15 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+          {mustSignIn && !showSignInModal && (
+            <button
+              type="button"
+              className="card-lock-shield"
+              onClick={() => setShowSignInModal(true)}
+              aria-label="Sign in to edit your details"
+            />
+          )}
         </div>
 
         <div className="card">
