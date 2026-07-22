@@ -13,7 +13,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 # =============================================================================
 # STATIC CONFIGURATION CONSTANTS
@@ -27,39 +27,6 @@ SEND_DELAY: float = 1.0  # Delay between emails in seconds
 # File Paths (Static) — resolve against this file so WSGI/cron jobs work when CWD != project root
 _PROJECT_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH: str = str(_PROJECT_DIR / "email_template.html")
-
-# Recipients List - Add company name for personalized greetings
-RECIPIENTS: List[Dict[str, str]] = [
-    # {"email": "info@genius-planet.com", "company": "Genius Planet"},
-    # {"email": "info@dolftech.com", "company": "Dolf Tech"},
-    # {"email": "info@veracodia.com", "company": "VeraCodia"},
-    # {"email": "Eymtax@gmail.com", "company": "Eymtax"},
-    # {"email": "ceo@hdour.com", "company": "hdour"},
-    # {"email": "info@chamona.com", "company": "chamona"},
-    # {"email": "lausanne.a@shiftconsults.com"},
-    # {
-    #     "email": "Mazaddimashq@gmail.com",
-    #     "company": "Mazad Dimashq",
-    # },
-    # {"email": "info@gshub.co", "company": "Gshub"},
-    # {"email": "a.warasneh@taqnyat.sa", "company": "Taqnyat"},
-    # {"email": "info@pro-wave.net", "company": "Pro Wave"},
-    # {
-    #     "email": "captaincar.9133@gmail.com",
-    #     "company": "Captain Car",
-    # },
-    # {"email": "a.alrayess@tarynix.com", "company": "Tarynix"},
-    # {"email": "info@rar-it.com", "company": "Rar IT"},
-    # {"email": "sales@bluerayws.com", "company": "Blue Ray"},
-    # {"email": "sales@NovaGroups.net", "company": "Nova Group"},
-    # {"email": "sales@icrcompany.net", "company": "ICR"},
-    # {"email": "sally-al-janan@tikram-group.sy", "company": "Tfadal"},
-    # {"email": "hind@gshub.co", "company": "gshub"},
-    # {"email": "hr@geniusplanetacademy.com", "company": "Genius Planet"},
-    # {"email": "jobs@job-shop.net", "company": ""},
-    # {"email": "info@alrounq.com", "company": "Al Rounq"},
-    # {"email": "info@khubrat.com", "company": ""},
-]
 
 # =============================================================================
 # LOGGING CONFIGURATION
@@ -218,14 +185,9 @@ def validate_configuration(check_recipients: bool = True) -> None:
     Validate that all required configuration is present.
 
     Args:
-        check_recipients: If True, validate that RECIPIENTS list is not empty.
-                         Set to False when recipients are provided via API.
+        check_recipients: Kept for API compatibility. Recipients are always supplied
+                         per-request by the API, so this flag is currently a no-op.
     """
-    if check_recipients and not RECIPIENTS:
-        raise RuntimeError(
-            "No recipients configured. Please add at least one recipient."
-        )
-
     template_path = Path(TEMPLATE_PATH)
     if not template_path.exists():
         raise FileNotFoundError(f"Email template not found: {TEMPLATE_PATH}")

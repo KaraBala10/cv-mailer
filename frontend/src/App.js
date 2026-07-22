@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import "./App.css";
 import Notification from "./Notification";
@@ -9,9 +9,77 @@ const API_BASE_URL =
 /** Same-tab refresh keeps Google session until Sign out or token revoked (sessionStorage). */
 const STORAGE_GOOGLE_TOKEN = "cv_mailer_google_access_token";
 const STORAGE_GOOGLE_USER = "cv_mailer_google_user";
+/** Form fields persist across reloads (localStorage); the CV file is never stored. */
+const STORAGE_FORM = "cv_mailer_form_v1";
+const STORAGE_THEME = "cv_mailer_theme";
+
+const DEFAULT_MAX_PDF_BYTES = 15 * 1024 * 1024;
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const isValidEmail = (email) => EMAIL_RE.test((email || "").trim());
+
+const formatBytes = (bytes) => {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
+const loadStoredForm = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_FORM);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+const getInitialTheme = () => {
+  try {
+    const stored = localStorage.getItem(STORAGE_THEME);
+    if (stored === "light" || stored === "dark") return stored;
+  } catch {
+    /* ignore */
+  }
+  if (
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  ) {
+    return "dark";
+  }
+  return "light";
+};
+
+/** Parse pasted / CSV text into recipients. Accepts comma, tab or semicolon delimiters. */
+const parseRecipientsText = (text) => {
+  const out = [];
+  const seen = new Set();
+  (text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const parts = line.split(/[,;\t]/).map((p) => p.trim());
+      const email = parts[0] || "";
+      const company = parts.slice(1).join(" ").trim();
+      if (!isValidEmail(email)) return;
+      const key = email.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ email, company });
+    });
+  return out;
+};
 
 function App() {
-  const [recipients, setRecipients] = useState([{ email: "", company: "" }]);
+  const storedForm = useMemo(loadStoredForm, []);
+
+  const [recipients, setRecipients] = useState(
+    Array.isArray(storedForm.recipients) && storedForm.recipients.length
+      ? storedForm.recipients
+      : [{ email: "", company: "" }],
+  );
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
@@ -21,13 +89,15 @@ function App() {
    */
   const [googleUser, setGoogleUser] = useState(undefined);
   const [googleOAuthReady, setGoogleOAuthReady] = useState(false);
-  const [jobTitle, setJobTitle] = useState("");
-  const [subject, setSubject] = useState("");
+  const [jobTitle, setJobTitle] = useState(storedForm.jobTitle || "");
+  const [subject, setSubject] = useState(storedForm.subject || "");
   const [pdfFile, setPdfFile] = useState(null);
   const [pdfFileName, setPdfFileName] = useState("");
-  const [name, setName] = useState("");
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [portfolioLink, setPortfolioLink] = useState("");
+  const [name, setName] = useState(storedForm.name || "");
+  const [phoneNumber, setPhoneNumber] = useState(storedForm.phoneNumber || "");
+  const [portfolioLink, setPortfolioLink] = useState(
+    storedForm.portfolioLink || "",
+  );
   const [notification, setNotification] = useState({
     show: false,
     message: "",
@@ -37,6 +107,14 @@ function App() {
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [sendProgress, setSendProgress] = useState({ current: 0, total: 0 });
+  const [testSending, setTestSending] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [theme, setTheme] = useState(getInitialTheme);
+
+  const maxPdfBytes = config?.max_pdf_bytes || DEFAULT_MAX_PDF_BYTES;
 
   const canPreviewEmail = Boolean(
     name.trim() && jobTitle.trim() && phoneNumber.trim(),
@@ -46,25 +124,48 @@ function App() {
     fetchConfig();
   }, []);
 
+  // Persist form fields (never the CV file itself).
   useEffect(() => {
-    if (!showPreview) {
+    try {
+      localStorage.setItem(
+        STORAGE_FORM,
+        JSON.stringify({
+          name,
+          jobTitle,
+          subject,
+          phoneNumber,
+          portfolioLink,
+          recipients,
+        }),
+      );
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  }, [name, jobTitle, subject, phoneNumber, portfolioLink, recipients]);
+
+  // Apply + persist theme.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem(STORAGE_THEME, theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    if (!showPreview && !showImport) {
       return;
     }
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
         setShowPreview(false);
+        setShowImport(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showPreview]);
-
-  useEffect(() => {
-    if (config) {
-      setJobTitle((config.job_title || "").trim());
-      setSubject(config.subject || "");
-    }
-  }, [config]);
+  }, [showPreview, showImport]);
 
   const googleClientId =
     config?.google_oauth_client_id ||
@@ -272,11 +373,62 @@ function App() {
     setRecipients(updated);
   };
 
+  const clearRecipients = () => {
+    setRecipients([{ email: "", company: "" }]);
+    setRecipientStatus({});
+    setResults(null);
+  };
+
   const showNotification = (message, type = "info") => {
     setNotification({ show: true, message, type });
     setTimeout(() => {
       setNotification({ show: false, message: "", type: "info" });
     }, 5000);
+  };
+
+  const acceptPdfFile = (file) => {
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      showNotification("Please select a PDF file", "warning");
+      return;
+    }
+    if (file.size > maxPdfBytes) {
+      showNotification(
+        `PDF is too large (${formatBytes(file.size)}). Maximum is ${formatBytes(
+          maxPdfBytes,
+        )}.`,
+        "error",
+      );
+      return;
+    }
+    setPdfFile(file);
+    setPdfFileName(file.name);
+  };
+
+  const importRecipients = () => {
+    const parsed = parseRecipientsText(importText);
+    if (parsed.length === 0) {
+      showNotification(
+        "No valid email addresses found. Use one per line: email, company",
+        "warning",
+      );
+      return;
+    }
+    setRecipients((prev) => {
+      const existing = new Map(
+        prev
+          .filter((r) => r.email.trim())
+          .map((r) => [r.email.trim().toLowerCase(), r]),
+      );
+      parsed.forEach((r) => {
+        existing.set(r.email.toLowerCase(), r);
+      });
+      const merged = Array.from(existing.values());
+      return merged.length ? merged : [{ email: "", company: "" }];
+    });
+    setImportText("");
+    setShowImport(false);
+    showNotification(`Imported ${parsed.length} recipient(s)`, "success");
   };
 
   const openEmailPreview = async () => {
@@ -313,185 +465,277 @@ function App() {
     }
   };
 
-  const sendEmails = async () => {
-    const validRecipients = recipients.filter((r) => r.email.trim() !== "");
-
-    if (validRecipients.length === 0) {
-      showNotification(
-        "Please add at least one recipient email address",
-        "warning",
-      );
-      return;
+  /** Shared field/auth checks before any send. Returns true if OK, else notifies. */
+  const validateBeforeSend = ({ requireRecipients = true } = {}) => {
+    if (requireRecipients) {
+      const valid = recipients.filter((r) => r.email.trim() !== "");
+      if (valid.length === 0) {
+        showNotification(
+          "Please add at least one recipient email address",
+          "warning",
+        );
+        return false;
+      }
+      const invalid = valid.filter((r) => !isValidEmail(r.email));
+      if (invalid.length > 0) {
+        showNotification(
+          `Invalid email address: ${invalid[0].email.trim()}`,
+          "warning",
+        );
+        return false;
+      }
     }
 
-    const hasGoogleToken = Boolean(oauthAccessToken.trim());
     if (googleClientId) {
-      if (!hasGoogleToken) {
+      if (!oauthAccessToken.trim()) {
         showNotification('Click "Sign in with Google" first.', "warning");
-        return;
+        return false;
       }
-    } else if (serverOauthConfigured) {
-      // API uses refresh token from env only.
-    } else {
+    } else if (!serverOauthConfigured) {
       showNotification("Google OAuth is not configured for this app.", "error");
-      return;
+      return false;
     }
 
     if (!jobTitle.trim()) {
       showNotification("Please enter your job title", "warning");
-      return;
+      return false;
     }
-
     if (!subject.trim()) {
       showNotification("Please enter email subject", "warning");
-      return;
+      return false;
     }
-
     if (!pdfFile) {
       showNotification("Please select a PDF file to attach", "warning");
-      return;
+      return false;
     }
-
     if (!name.trim()) {
       showNotification("Please enter your name", "warning");
-      return;
+      return false;
     }
-
     if (!phoneNumber.trim()) {
       showNotification("Please enter your phone number", "warning");
+      return false;
+    }
+    return true;
+  };
+
+  const readPdfAsBase64 = () =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = () => reject(new Error("Failed to read PDF file"));
+      reader.readAsDataURL(pdfFile);
+    });
+
+  const commonEmailPayload = (base64Pdf) => {
+    const authFields = oauthAccessToken.trim()
+      ? { oauth_access_token: oauthAccessToken.trim() }
+      : {};
+    return {
+      sender_email: "",
+      ...authFields,
+      job_title: jobTitle.trim(),
+      subject: subject.trim(),
+      pdf_file: base64Pdf,
+      pdf_filename: pdfFileName || pdfFile.name,
+      name: name.trim(),
+      phone_number: phoneNumber.trim().replace(/\D/g, ""),
+      portfolio_link: portfolioLink.trim(),
+    };
+  };
+
+  /** Dedupe by lowercased email, keeping the first occurrence. */
+  const dedupeRecipients = (list) => {
+    const seen = new Set();
+    return list.filter((r) => {
+      const key = r.email.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const runSend = async (targetRecipients) => {
+    setLoading(true);
+    setResults(null);
+    setSendProgress({ current: 0, total: targetRecipients.length });
+
+    const initialStatus = {};
+    targetRecipients.forEach((r) => {
+      initialStatus[r.email.trim()] = {
+        status: "pending",
+        message: "Waiting...",
+      };
+    });
+    setRecipientStatus((prev) => ({ ...prev, ...initialStatus }));
+
+    let base64Pdf;
+    try {
+      base64Pdf = await readPdfAsBase64();
+    } catch (e) {
+      showNotification(e.message || "Failed to read PDF file", "error");
+      setLoading(false);
       return;
     }
 
-    setLoading(true);
-    setResults(null);
+    const collected = [];
+    let successful = 0;
+    let failed = 0;
 
-    // Initialize status for all recipients
-    const initialStatus = {};
-    validRecipients.forEach((r) => {
-      initialStatus[r.email] = { status: "pending", message: "Waiting..." };
-    });
-    setRecipientStatus(initialStatus);
-
-    // Convert PDF to base64
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64Pdf = reader.result.split(",")[1]; // Remove data:application/pdf;base64, prefix
+    for (let i = 0; i < targetRecipients.length; i++) {
+      const recipient = targetRecipients[i];
+      const email = recipient.email.trim();
+      setSendProgress({ current: i, total: targetRecipients.length });
+      setRecipientStatus((prev) => ({
+        ...prev,
+        [email]: { status: "sending", message: "Sending..." },
+      }));
 
       try {
-        // Send emails one by one for live updates
-        const results = [];
-        let successful = 0;
-        let failed = 0;
-
-        for (const recipient of validRecipients) {
-          const email = recipient.email.trim();
-
-          // Update status to sending
+        const response = await axios.post(`${API_BASE_URL}/send-single`, {
+          recipient,
+          ...commonEmailPayload(base64Pdf),
+        });
+        if (response.data.success) {
+          successful++;
+          collected.push({ email, status: "success", message: "Email sent" });
           setRecipientStatus((prev) => ({
             ...prev,
-            [email]: { status: "sending", message: "Sending..." },
+            [email]: { status: "success", message: "✅ Sent" },
           }));
-
-          try {
-            const authFields = oauthAccessToken.trim()
-              ? { oauth_access_token: oauthAccessToken.trim() }
-              : {};
-
-            const response = await axios.post(`${API_BASE_URL}/send-single`, {
-              recipient: recipient,
-              sender_email: "",
-              ...authFields,
-              job_title: jobTitle.trim(),
-              subject: subject.trim(),
-              pdf_file: base64Pdf,
-              pdf_filename: pdfFileName || pdfFile.name,
-              name: name.trim(),
-              phone_number: phoneNumber.trim().replace(/\D/g, ""), // Remove non-digits
-              portfolio_link: portfolioLink.trim(),
-            });
-
-            if (response.data.success) {
-              successful++;
-              results.push({
-                email,
-                status: "success",
-                message: "Email sent successfully",
-              });
-              setRecipientStatus((prev) => ({
-                ...prev,
-                [email]: { status: "success", message: "✅ Sent" },
-              }));
-            } else {
-              failed++;
-              results.push({
-                email,
-                status: "error",
-                message: response.data.message || "Failed to send",
-              });
-              setRecipientStatus((prev) => ({
-                ...prev,
-                [email]: { status: "error", message: "❌ Failed" },
-              }));
-            }
-          } catch (error) {
-            failed++;
-            const errorMsg = error.response?.data?.error || error.message;
-            results.push({
-              email,
-              status: "error",
-              message: errorMsg,
-            });
-            setRecipientStatus((prev) => ({
-              ...prev,
-              [email]: { status: "error", message: `❌ ${errorMsg}` },
-            }));
-          }
-
-          // Small delay between emails
-          await new Promise((resolve) => setTimeout(resolve, 500));
+        } else {
+          failed++;
+          const msg = response.data.error || "Failed to send";
+          collected.push({ email, status: "error", message: msg });
+          setRecipientStatus((prev) => ({
+            ...prev,
+            [email]: { status: "error", message: `❌ ${msg}` },
+          }));
         }
-
-        setResults({
-          success: true,
-          results,
-          summary: {
-            successful,
-            failed,
-            total: validRecipients.length,
-          },
-        });
-
-        showNotification(
-          `Emails sent! Success: ${successful}, Failed: ${failed}`,
-          successful === validRecipients.length
-            ? "success"
-            : failed > 0
-              ? "warning"
-              : "success",
-        );
       } catch (error) {
-        console.error("Failed to send emails:", error);
-        showNotification(
-          `Error: ${error.response?.data?.error || error.message}`,
-          "error",
-        );
-      } finally {
-        setLoading(false);
+        failed++;
+        const errorMsg = error.response?.data?.error || error.message;
+        collected.push({ email, status: "error", message: errorMsg });
+        setRecipientStatus((prev) => ({
+          ...prev,
+          [email]: { status: "error", message: `❌ ${errorMsg}` },
+        }));
       }
-    };
 
-    reader.onerror = () => {
-      showNotification("Failed to read PDF file", "error");
-      setLoading(false);
-    };
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
 
-    reader.readAsDataURL(pdfFile);
+    setSendProgress({
+      current: targetRecipients.length,
+      total: targetRecipients.length,
+    });
+
+    // Merge with any prior results so a retry updates only the failed rows.
+    setResults((prev) => {
+      const byEmail = new Map(
+        (prev?.results || []).map((r) => [r.email, r]),
+      );
+      collected.forEach((r) => byEmail.set(r.email, r));
+      const merged = Array.from(byEmail.values());
+      return {
+        success: true,
+        results: merged,
+        summary: {
+          successful: merged.filter((r) => r.status === "success").length,
+          failed: merged.filter((r) => r.status === "error").length,
+          total: merged.length,
+        },
+      };
+    });
+
+    showNotification(
+      `Done. Success: ${successful}, Failed: ${failed}`,
+      failed > 0 ? (successful > 0 ? "warning" : "error") : "success",
+    );
+    setLoading(false);
   };
+
+  const sendEmails = async () => {
+    if (!validateBeforeSend()) return;
+    const target = dedupeRecipients(
+      recipients.filter((r) => r.email.trim() !== ""),
+    );
+    await runSend(target);
+  };
+
+  const retryFailed = async () => {
+    if (!results) return;
+    const failedEmails = new Set(
+      results.results.filter((r) => r.status === "error").map((r) => r.email),
+    );
+    const target = dedupeRecipients(
+      recipients.filter((r) => failedEmails.has(r.email.trim())),
+    );
+    if (target.length === 0) {
+      showNotification("No failed recipients to retry", "info");
+      return;
+    }
+    if (!validateBeforeSend({ requireRecipients: false })) return;
+    await runSend(target);
+  };
+
+  const sendTestEmail = async () => {
+    const to =
+      (typeof googleUser === "object" && googleUser?.email) ||
+      (typeof googleUser === "object" && googleUser?.name) ||
+      "";
+    if (!isValidEmail(to)) {
+      showNotification(
+        "Sign in with Google first so we know where to send the test.",
+        "warning",
+      );
+      return;
+    }
+    if (!validateBeforeSend({ requireRecipients: false })) return;
+
+    setTestSending(true);
+    try {
+      const base64Pdf = await readPdfAsBase64();
+      const firstWithCompany = recipients.find((r) => r.company.trim());
+      const response = await axios.post(`${API_BASE_URL}/test-email`, {
+        email: to,
+        company: firstWithCompany?.company?.trim() || "",
+        ...commonEmailPayload(base64Pdf),
+      });
+      if (response.data.success) {
+        showNotification(`Test email sent to ${to}`, "success");
+      } else {
+        showNotification(response.data.error || "Test email failed", "error");
+      }
+    } catch (error) {
+      showNotification(
+        `Test failed: ${error.response?.data?.error || error.message}`,
+        "error",
+      );
+    } finally {
+      setTestSending(false);
+    }
+  };
+
+  const failedCount = results?.summary?.failed || 0;
+  const progressPct =
+    sendProgress.total > 0
+      ? Math.round((sendProgress.current / sendProgress.total) * 100)
+      : 0;
 
   return (
     <div className="App">
       <div className="container">
         <header className="header">
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            aria-label="Toggle dark mode"
+            title="Toggle dark mode"
+          >
+            {theme === "dark" ? "☀️" : "🌙"}
+          </button>
           <h1>CV-Mailer</h1>
           <p>Job Application Email Automation</p>
         </header>
@@ -613,30 +857,51 @@ function App() {
             </div>
             <div className="form-group">
               <label htmlFor="pdf-file">CV/Resume PDF *</label>
-              <input
-                id="pdf-file"
-                type="file"
-                accept=".pdf"
-                onChange={(e) => {
-                  const file = e.target.files[0];
-                  if (file) {
-                    if (file.type !== "application/pdf") {
-                      alert("Please select a PDF file");
-                      e.target.value = "";
-                      return;
-                    }
-                    setPdfFile(file);
-                    setPdfFileName(file.name);
-                  }
+              <label
+                htmlFor="pdf-file"
+                className={`dropzone${isDragging ? " dropzone--active" : ""}${
+                  pdfFileName ? " dropzone--filled" : ""
+                }`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
                 }}
-                className="input-file"
-                required
-              />
-              {pdfFileName && (
-                <small className="help-text success-text">
-                  ✓ {pdfFileName}
-                </small>
-              )}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  acceptPdfFile(e.dataTransfer.files?.[0]);
+                }}
+              >
+                <span className="dropzone-icon" aria-hidden>
+                  {pdfFileName ? "📄" : "⬆️"}
+                </span>
+                <span className="dropzone-text">
+                  {pdfFileName ? (
+                    <>
+                      <strong>{pdfFileName}</strong>
+                      <small>Click or drop to replace</small>
+                    </>
+                  ) : (
+                    <>
+                      <strong>Drop your CV here</strong>
+                      <small>
+                        or click to browse · PDF up to {formatBytes(maxPdfBytes)}
+                      </small>
+                    </>
+                  )}
+                </span>
+                <input
+                  id="pdf-file"
+                  type="file"
+                  accept=".pdf"
+                  onChange={(e) => {
+                    acceptPdfFile(e.target.files[0]);
+                    e.target.value = "";
+                  }}
+                  className="dropzone-input"
+                />
+              </label>
             </div>
             <div className="form-group">
               <label htmlFor="name">Your Name *</label>
@@ -679,42 +944,62 @@ function App() {
                 className="input"
               />
             </div>
-            {canPreviewEmail && (
+            <div className="config-actions">
               <button
                 type="button"
                 className="btn btn-preview"
                 onClick={openEmailPreview}
-                disabled={previewLoading || loading}
+                disabled={!canPreviewEmail || previewLoading || loading}
               >
                 {previewLoading ? "Loading preview..." : "Preview Email"}
               </button>
-            )}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={sendTestEmail}
+                disabled={testSending || loading || !authReadyForSend}
+                title="Send a copy to your own signed-in address"
+              >
+                {testSending ? "Sending test..." : "Send Test to Myself"}
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="card">
           <div className="card-header">
             <h2>Recipients</h2>
-            <button onClick={addRecipient} className="btn btn-add">
-              + Add Recipient
-            </button>
+            <div className="card-header-actions">
+              <button
+                onClick={() => setShowImport(true)}
+                className="btn btn-add"
+                disabled={loading}
+              >
+                Import list
+              </button>
+              <button onClick={addRecipient} className="btn btn-add" disabled={loading}>
+                + Add
+              </button>
+              {recipients.some((r) => r.email.trim()) && (
+                <button
+                  onClick={clearRecipients}
+                  className="btn btn-remove"
+                  disabled={loading}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="recipients-list">
             {recipients.map((recipient, index) => {
               const email = recipient.email.trim();
               const status = recipientStatus[email];
+              const invalid = email !== "" && !isValidEmail(email);
               return (
                 <div key={index} className="recipient-item">
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "10px",
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      width: "100%",
-                    }}
-                  >
+                  <div className="recipient-row">
                     <div className="recipient-input-wrapper">
                       <input
                         type="email"
@@ -723,7 +1008,7 @@ function App() {
                         onChange={(e) =>
                           updateRecipient(index, "email", e.target.value)
                         }
-                        className="input"
+                        className={`input${invalid ? " input--invalid" : ""}`}
                         required
                         disabled={loading}
                       />
@@ -745,9 +1030,8 @@ function App() {
                       onChange={(e) =>
                         updateRecipient(index, "company", e.target.value)
                       }
-                      className="input"
+                      className="input recipient-company"
                       disabled={loading}
-                      style={{ flex: "1", minWidth: "200px" }}
                     />
                     {recipients.length > 1 && (
                       <button
@@ -759,6 +1043,11 @@ function App() {
                       </button>
                     )}
                   </div>
+                  {invalid && (
+                    <div className="status-message status-error">
+                      Invalid email address
+                    </div>
+                  )}
                   {status && (
                     <div className={`status-message status-${status.status}`}>
                       {status.message}
@@ -768,6 +1057,20 @@ function App() {
               );
             })}
           </div>
+
+          {loading && sendProgress.total > 0 && (
+            <div className="send-progress">
+              <div className="send-progress-bar">
+                <div
+                  className="send-progress-fill"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="send-progress-label">
+                Sending {sendProgress.current} / {sendProgress.total}
+              </span>
+            </div>
+          )}
 
           <button
             onClick={sendEmails}
@@ -784,7 +1087,14 @@ function App() {
 
         {results && (
           <div className="card results-card">
-            <h2>Results</h2>
+            <div className="card-header">
+              <h2>Results</h2>
+              {failedCount > 0 && !loading && (
+                <button className="btn btn-secondary" onClick={retryFailed}>
+                  Retry {failedCount} failed
+                </button>
+              )}
+            </div>
             <div className="results-summary">
               <div className="summary-item success">
                 <span className="summary-label">Successful:</span>
@@ -818,7 +1128,7 @@ function App() {
           <p>
             This site made by{" "}
             <a
-              href="https://https://karabala-portfolio.vercel.app/"
+              href="https://karabala-portfolio.vercel.app/"
               target="_blank"
               rel="noopener noreferrer"
               className="footer-link"
@@ -828,6 +1138,66 @@ function App() {
           </p>
         </footer>
       </div>
+
+      {showImport && (
+        <div
+          className="preview-overlay"
+          onClick={() => setShowImport(false)}
+          role="presentation"
+        >
+          <div
+            className="preview-modal import-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-title"
+          >
+            <div className="preview-header">
+              <div>
+                <h2 id="import-title">Import recipients</h2>
+                <p className="preview-subject">
+                  One per line: <code>email, company</code> (company optional)
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-preview-close"
+                onClick={() => setShowImport(false)}
+                aria-label="Close import"
+              >
+                ×
+              </button>
+            </div>
+            <div className="import-body">
+              <textarea
+                className="import-textarea"
+                placeholder={
+                  "hr@company.com, Company Inc\njobs@startup.io\nceo@example.com, Example"
+                }
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+              />
+              <div className="import-actions">
+                <button
+                  type="button"
+                  className="btn btn-add"
+                  onClick={() => setShowImport(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-send import-confirm"
+                  onClick={importRecipients}
+                >
+                  Import
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showPreview && (
         <div
           className="preview-overlay"

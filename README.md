@@ -9,14 +9,16 @@
 
 ## ✨ Features
 
-- 🚀 **Bulk Email Sending** - Send personalized emails to multiple recipients simultaneously
-- 📊 **Real-time Status Tracking** - Live updates showing the status of each email (pending, sending, success, error)
-- 🎨 **Modern UI** - Clean, minimalist interface built with React
-- 📝 **Customizable Templates** - Personalized email templates with dynamic placeholders
-- 📎 **PDF Attachment** - Attach your CV/Resume directly from the interface
+- 🚀 **Bulk Email Sending** - Send personalized emails to multiple recipients with live per-recipient status
+- 📊 **Real-time Status Tracking** - Progress bar plus per-email status (pending, sending, success, error)
+- 📥 **List Import** - Paste or import a CSV-style list (`email, company` per line), auto-deduplicated
+- 🔁 **Retry Failed** - Re-send only the recipients that failed, without redoing the whole batch
+- 🧪 **Test to Yourself** - Send a test copy to your signed-in address before the real send
+- 💾 **Remembers Your Details** - Name, title, phone, portfolio and recipients persist locally (the CV is never stored)
+- 🌓 **Light & Dark Mode** - Theme toggle that follows your system preference
+- 🎨 **Modern UI** - Clean interface whose palette matches the email template (navy + gold)
+- 📎 **Drag & Drop PDF** - Attach your CV/Resume by dropping it in, with a size limit and clear errors
 - 🔐 **Secure** - Gmail via Google OAuth2 (browser and/or server refresh token), no app passwords
-- ⚡ **Live Logs** - See email sending progress in real-time with visual indicators
-- 🎯 **Easy to Use** - Simple, intuitive interface for managing recipients and sending emails
 - 📱 **Responsive Design** - Works seamlessly on desktop and mobile devices
 
 ## 🛠️ Tech Stack
@@ -57,6 +59,8 @@ pip install -r requirements.txt
 
    - `GOOGLE_OAUTH_WEB_CLIENT_ID` — Web client ID for the React app (Sign in with Google)
    - `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN` — optional server-side Gmail OAuth for sending without a browser token
+   - `FLASK_DEBUG` — set to `true` to enable Flask debug mode (default: off; keep off in production)
+   - `CORS_ALLOWED_ORIGINS` — optional comma-separated allowlist of origins (default: allow all, for local dev)
 
 3. Run the Flask app:
 

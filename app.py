@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import os
+import re
 import smtplib
 import time
 import urllib.error
@@ -36,8 +37,21 @@ from code_sender import (
 )
 from gmail_oauth import access_token_from_refresh_token, smtp_auth_xoauth2
 
+# Gmail rejects messages larger than 25 MB; keep a margin for MIME/base64 overhead.
+MAX_PDF_BYTES = 15 * 1024 * 1024
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+
+# CORS: restrict to comma-separated origins in CORS_ALLOWED_ORIGINS, else allow all (dev default).
+_cors_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_origins:
+    CORS(app, resources={r"/api/*": {"origins": [o.strip() for o in _cors_origins.split(",") if o.strip()]}})
+else:
+    CORS(app)
+
+# Reject oversized request bodies early (PDF is base64, so ~1.4x the raw cap plus JSON slack).
+app.config["MAX_CONTENT_LENGTH"] = int(MAX_PDF_BYTES * 1.5) + 1 * 1024 * 1024
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +60,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _is_valid_email(email: str) -> bool:
+    return bool(_EMAIL_RE.match((email or "").strip()))
 
 
 def _portfolio_section(portfolio_link: str) -> str:
@@ -64,6 +82,44 @@ def _portfolio_section(portfolio_link: str) -> str:
         'border-bottom: 1px solid #c5a572;">Portfolio</a>'
         "</p>"
     )
+
+
+def _digits_only(value: str) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _render_body(
+    template: str,
+    *,
+    greeting: str,
+    job_title: str,
+    name: str,
+    phone_number: str,
+    email: str,
+    portfolio_section: str,
+) -> str:
+    return template.format(
+        greeting=greeting,
+        job_title=job_title,
+        name=name,
+        phone_number=phone_number,
+        email=email,
+        portfolio_section=portfolio_section,
+    )
+
+
+def _decode_pdf(pdf_file_base64: str) -> tuple[bytes | None, str | None]:
+    """Decode a base64 PDF and enforce the size cap. Returns (data, error_message)."""
+    if not pdf_file_base64:
+        return None, "PDF file is required"
+    try:
+        pdf_data = base64.b64decode(pdf_file_base64)
+    except Exception as e:  # noqa: BLE001 - surface decode failures to the client
+        return None, f"Invalid PDF file data: {str(e)}"
+    if len(pdf_data) > MAX_PDF_BYTES:
+        mb = MAX_PDF_BYTES / (1024 * 1024)
+        return None, f"PDF is too large. Maximum size is {mb:.0f} MB."
+    return pdf_data, None
 
 
 def _server_oauth_env_configured() -> bool:
@@ -175,6 +231,128 @@ def _gmail_smtp_session(
         yield smtp
 
 
+class SendRequestError(Exception):
+    """Validation error carrying an HTTP status code."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+class SendContext:
+    """Everything needed to render and send: resolved auth, sender, PDF, and template."""
+
+    def __init__(
+        self,
+        *,
+        data: dict,
+        sender_email: str,
+        oauth_for_smtp: str | None,
+        job_title: str,
+        subject: str,
+        name: str,
+        phone_number: str,
+        portfolio_section: str,
+        pdf_data: bytes,
+        pdf_filename: str,
+        template: str,
+    ):
+        self.data = data
+        self.sender_email = sender_email
+        self.oauth_for_smtp = oauth_for_smtp
+        self.job_title = job_title
+        self.subject = subject
+        self.name = name
+        self.phone_number = phone_number
+        self.portfolio_section = portfolio_section
+        self.pdf_data = pdf_data
+        self.pdf_filename = pdf_filename
+        self.template = template
+
+    def render_for(self, recipient: dict, *, fallback_name: str | None = None) -> str:
+        greeting = create_greeting(recipient)
+        return _render_body(
+            self.template,
+            greeting=greeting,
+            job_title=self.job_title,
+            name=self.name or (fallback_name or ""),
+            phone_number=self.phone_number,
+            email=self.sender_email,
+            portfolio_section=self.portfolio_section,
+        )
+
+    @contextmanager
+    def smtp(self):
+        with _gmail_smtp_session(
+            self.sender_email, self.data, oauth_access_token=self.oauth_for_smtp
+        ) as smtp:
+            yield smtp
+
+
+def _build_send_context(data: dict, *, require_name_phone: bool = True) -> SendContext:
+    """
+    Resolve auth + sender, validate shared fields, decode the PDF, and load the template.
+    Raises SendRequestError on any validation failure.
+    """
+    if not _has_smtp_auth(data):
+        raise SendRequestError(
+            "Gmail sign-in required: use Google OAuth in the app or "
+            "configure server OAuth env vars (refresh token + client id/secret)."
+        )
+
+    sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
+    if not sender_email:
+        raise SendRequestError(
+            "Sender email is required (or sign in with Google so we can "
+            "detect it — userinfo.email scope must be granted)."
+        )
+
+    job_title = (data.get("job_title") or "").strip()
+    if not job_title:
+        raise SendRequestError("Job title is required")
+
+    subject = (data.get("subject") or "").strip()
+    if not subject:
+        raise SendRequestError("Subject is required")
+
+    name = (data.get("name") or "").strip()
+    phone_number = _digits_only(data.get("phone_number") or "")
+    if require_name_phone:
+        if not name:
+            raise SendRequestError("Name is required")
+        if not phone_number:
+            raise SendRequestError("Phone number is required")
+
+    pdf_data, pdf_error = _decode_pdf(data.get("pdf_file", ""))
+    if pdf_error:
+        raise SendRequestError(pdf_error)
+
+    try:
+        validate_configuration(check_recipients=False)
+    except Exception as e:  # noqa: BLE001
+        raise SendRequestError(f"Configuration error: {str(e)}", status=500) from e
+
+    try:
+        template = load_email_template(TEMPLATE_PATH)
+    except Exception as e:  # noqa: BLE001
+        raise SendRequestError(f"Template loading error: {str(e)}", status=500) from e
+
+    return SendContext(
+        data=data,
+        sender_email=sender_email,
+        oauth_for_smtp=oauth_for_smtp,
+        job_title=job_title,
+        subject=subject,
+        name=name,
+        phone_number=phone_number,
+        portfolio_section=_portfolio_section(data.get("portfolio_link", "")),
+        pdf_data=pdf_data,
+        pdf_filename=data.get("pdf_filename", "CV.pdf"),
+        template=template,
+    )
+
+
 @app.route("/api/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
@@ -190,6 +368,7 @@ def get_config():
             "smtp_server": SMTP_SERVER,
             "smtp_port": SMTP_PORT,
             "send_delay": SEND_DELAY,
+            "max_pdf_bytes": MAX_PDF_BYTES,
             "job_title": "",  # User enters in UI; empty default
             "subject": "",  # Empty default, user will provide
             "server_oauth_configured": _server_oauth_env_configured(),
@@ -208,9 +387,7 @@ def preview_email():
         data = request.get_json() or {}
         name = (data.get("name") or "").strip()
         job_title = (data.get("job_title") or "").strip()
-        phone_number = "".join(
-            ch for ch in (data.get("phone_number") or "") if ch.isdigit()
-        )
+        phone_number = _digits_only(data.get("phone_number") or "")
         sender_email = (data.get("email") or "").strip() or "you@example.com"
         company = (data.get("company") or "").strip()
         portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
@@ -231,7 +408,8 @@ def preview_email():
             )
 
         greeting = create_greeting({"email": "", "company": company})
-        body = email_template.format(
+        body = _render_body(
+            email_template,
             greeting=greeting,
             job_title=job_title,
             name=name,
@@ -254,115 +432,50 @@ def preview_email():
 
 @app.route("/api/recipients", methods=["POST"])
 def send_emails():
-    """Send emails to a list of recipients."""
+    """Send emails to a list of recipients over a single SMTP session."""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         recipients = data.get("recipients", [])
-        job_title = data.get("job_title", "").strip()
-        subject = data.get("subject", "").strip()
-        pdf_file_base64 = data.get("pdf_file", "")
-        pdf_filename = data.get("pdf_filename", "CV.pdf")
-        name = data.get("name", "").strip()
-        phone_number = data.get("phone_number", "").strip()
-        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
-
         if not recipients:
             return jsonify({"error": "No recipients provided"}), 400
 
-        if not _has_smtp_auth(data):
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "Gmail sign-in required: use Google OAuth in the app or "
-                            "configure server OAuth env vars (refresh token + client id/secret)."
-                        )
-                    }
-                ),
-                400,
-            )
-
-        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
-
-        if not sender_email:
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "Sender email is required (or sign in with Google so we can "
-                            "detect it — userinfo.email scope must be granted)."
-                        )
-                    }
-                ),
-                400,
-            )
-
-        if not job_title:
-            return jsonify({"error": "Job title is required"}), 400
-
-        if not subject:
-            return jsonify({"error": "Subject is required"}), 400
-
-        if not pdf_file_base64:
-            return jsonify({"error": "PDF file is required"}), 400
-
-        if not name:
-            return jsonify({"error": "Name is required"}), 400
-
-        if not phone_number:
-            return jsonify({"error": "Phone number is required"}), 400
-
-        # Decode base64 PDF
         try:
-            pdf_data = base64.b64decode(pdf_file_base64)
-        except Exception as e:
-            return jsonify({"error": f"Invalid PDF file data: {str(e)}"}), 400
-
-        # Validate configuration (skip recipients check since they come from request)
-        try:
-            validate_configuration(check_recipients=False)
-        except Exception as e:
-            return jsonify({"error": f"Configuration error: {str(e)}"}), 500
-
-        # Load email template
-        try:
-            email_template = load_email_template(TEMPLATE_PATH)
-        except Exception as e:
-            return jsonify({"error": f"Template loading error: {str(e)}"}), 500
+            ctx = _build_send_context(data)
+        except SendRequestError as e:
+            return jsonify({"error": e.message}), e.status
 
         results = []
         successful_sends = 0
         failed_sends = 0
 
         try:
-            with _gmail_smtp_session(
-                sender_email, data, oauth_access_token=oauth_for_smtp
-            ) as smtp:
+            with ctx.smtp() as smtp:
                 for recipient in recipients:
-                    to_email = recipient.get("email", "").strip()
+                    to_email = (recipient.get("email") or "").strip()
                     if not to_email:
                         continue
+                    if not _is_valid_email(to_email):
+                        results.append(
+                            {
+                                "email": to_email,
+                                "status": "error",
+                                "message": "Invalid email address",
+                            }
+                        )
+                        failed_sends += 1
+                        continue
 
-                    greeting = create_greeting(recipient)
-                    body = email_template.format(
-                        greeting=greeting,
-                        job_title=job_title,
-                        name=name,
-                        phone_number=phone_number,
-                        email=sender_email,
-                        portfolio_section=portfolio_section,
-                    )
-
+                    body = ctx.render_for(recipient)
                     try:
                         logger.info(f"Sending email to: {to_email}")
                         send_one(
                             smtp,
-                            sender_email,
+                            ctx.sender_email,
                             to_email,
-                            subject,
+                            ctx.subject,
                             body,
-                            attachment_data=pdf_data,
-                            attachment_filename=pdf_filename,
+                            attachment_data=ctx.pdf_data,
+                            attachment_filename=ctx.pdf_filename,
                         )
                         logger.info(f"✅ Successfully sent to {to_email}")
                         results.append(
@@ -380,7 +493,6 @@ def send_emails():
                         )
                         failed_sends += 1
 
-                    # Add delay between emails
                     if len(recipients) > 1:
                         time.sleep(SEND_DELAY)
 
@@ -410,121 +522,37 @@ def send_emails():
 def send_single_email():
     """Send a single email to one recipient."""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         recipient = data.get("recipient", {})
-        to_email = recipient.get("email", "").strip()
-        job_title = data.get("job_title", "").strip()
-        subject = data.get("subject", "").strip()
-        pdf_file_base64 = data.get("pdf_file", "")
-        pdf_filename = data.get("pdf_filename", "CV.pdf")
-        name = data.get("name", "").strip()
-        phone_number = data.get("phone_number", "").strip()
-        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
+        to_email = (recipient.get("email") or "").strip()
 
         if not to_email:
             return (
                 jsonify({"success": False, "error": "Email address is required"}),
                 400,
             )
-
-        if not _has_smtp_auth(data):
+        if not _is_valid_email(to_email):
             return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": (
-                            "Gmail sign-in required: use Google OAuth in the app or "
-                            "configure server OAuth env vars (refresh token + client id/secret)."
-                        ),
-                    }
-                ),
+                jsonify({"success": False, "error": "Invalid email address"}),
                 400,
             )
 
-        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
-
-        if not sender_email:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": (
-                            "Sender email is required (or sign in with Google so we can "
-                            "detect it — userinfo.email scope must be granted)."
-                        ),
-                    }
-                ),
-                400,
-            )
-
-        if not job_title:
-            return jsonify({"success": False, "error": "Job title is required"}), 400
-
-        if not subject:
-            return jsonify({"success": False, "error": "Subject is required"}), 400
-
-        if not pdf_file_base64:
-            return jsonify({"success": False, "error": "PDF file is required"}), 400
-
-        if not name:
-            return jsonify({"success": False, "error": "Name is required"}), 400
-
-        if not phone_number:
-            return jsonify({"success": False, "error": "Phone number is required"}), 400
-
-        # Decode base64 PDF
         try:
-            pdf_data = base64.b64decode(pdf_file_base64)
-        except Exception as e:
-            return (
-                jsonify(
-                    {"success": False, "error": f"Invalid PDF file data: {str(e)}"}
-                ),
-                400,
-            )
+            ctx = _build_send_context(data)
+        except SendRequestError as e:
+            return jsonify({"success": False, "error": e.message}), e.status
 
-        # Validate configuration
+        body = ctx.render_for(recipient)
         try:
-            validate_configuration(check_recipients=False)
-        except Exception as e:
-            return (
-                jsonify({"success": False, "error": f"Configuration error: {str(e)}"}),
-                500,
-            )
-
-        # Load email template
-        try:
-            email_template = load_email_template(TEMPLATE_PATH)
-        except Exception as e:
-            return (
-                jsonify(
-                    {"success": False, "error": f"Template loading error: {str(e)}"}
-                ),
-                500,
-            )
-
-        greeting = create_greeting(recipient)
-        body = email_template.format(
-            greeting=greeting,
-            job_title=job_title,
-            name=name,
-            phone_number=phone_number,
-            email=sender_email,
-            portfolio_section=portfolio_section,
-        )
-
-        try:
-            with _gmail_smtp_session(
-                sender_email, data, oauth_access_token=oauth_for_smtp
-            ) as smtp:
+            with ctx.smtp() as smtp:
                 send_one(
                     smtp,
-                    sender_email,
+                    ctx.sender_email,
                     to_email,
-                    subject,
+                    ctx.subject,
                     body,
-                    attachment_data=pdf_data,
-                    attachment_filename=pdf_filename,
+                    attachment_data=ctx.pdf_data,
+                    attachment_filename=ctx.pdf_filename,
                 )
 
             return jsonify(
@@ -547,101 +575,34 @@ def send_single_email():
 
 @app.route("/api/test-email", methods=["POST"])
 def test_email():
-    """Send a test email to a single recipient."""
+    """Send a test email to a single recipient (name/phone optional; sender used as fallback)."""
     try:
-        data = request.get_json()
-        test_email_addr = data.get("email", "").strip()
-        job_title = data.get("job_title", "").strip()
-        subject = data.get("subject", "").strip()
-        pdf_file_base64 = data.get("pdf_file", "")
-        pdf_filename = data.get("pdf_filename", "CV.pdf")
+        data = request.get_json() or {}
+        test_email_addr = (data.get("email") or "").strip()
 
         if not test_email_addr:
             return jsonify({"error": "Email address is required"}), 400
+        if not _is_valid_email(test_email_addr):
+            return jsonify({"error": "Invalid email address"}), 400
 
-        if not _has_smtp_auth(data):
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "Gmail sign-in required: use Google OAuth in the app or "
-                            "configure server OAuth env vars (refresh token + client id/secret)."
-                        )
-                    }
-                ),
-                400,
-            )
-
-        sender_email, oauth_for_smtp = _resolve_sender_and_oauth_token(data)
-
-        if not sender_email:
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "Sender email is required (or sign in with Google so we can "
-                            "detect it — userinfo.email scope must be granted)."
-                        )
-                    }
-                ),
-                400,
-            )
-
-        if not job_title:
-            return jsonify({"error": "Job title is required"}), 400
-
-        if not subject:
-            return jsonify({"error": "Subject is required"}), 400
-
-        if not pdf_file_base64:
-            return jsonify({"error": "PDF file is required"}), 400
-
-        # Decode base64 PDF
         try:
-            pdf_data = base64.b64decode(pdf_file_base64)
-        except Exception as e:
-            return jsonify({"error": f"Invalid PDF file data: {str(e)}"}), 400
-
-        # Validate configuration (skip recipients check since they come from request)
-        try:
-            validate_configuration(check_recipients=False)
-        except Exception as e:
-            return jsonify({"error": f"Configuration error: {str(e)}"}), 500
-
-        # Load email template
-        try:
-            email_template = load_email_template(TEMPLATE_PATH)
-        except Exception as e:
-            return jsonify({"error": f"Template loading error: {str(e)}"}), 500
+            ctx = _build_send_context(data, require_name_phone=False)
+        except SendRequestError as e:
+            return jsonify({"error": e.message}), e.status
 
         recipient = {"email": test_email_addr, "company": data.get("company", "")}
-        greeting = create_greeting(recipient)
-        name = (data.get("name") or "").strip() or sender_email
-        phone_number = "".join(
-            ch for ch in (data.get("phone_number") or "") if ch.isdigit()
-        )
-        portfolio_section = _portfolio_section(data.get("portfolio_link", ""))
-        body = email_template.format(
-            greeting=greeting,
-            job_title=job_title,
-            name=name,
-            phone_number=phone_number,
-            email=sender_email,
-            portfolio_section=portfolio_section,
-        )
+        body = ctx.render_for(recipient, fallback_name=ctx.sender_email)
 
         try:
-            with _gmail_smtp_session(
-                sender_email, data, oauth_access_token=oauth_for_smtp
-            ) as smtp:
+            with ctx.smtp() as smtp:
                 send_one(
                     smtp,
-                    sender_email,
+                    ctx.sender_email,
                     test_email_addr,
-                    subject,
+                    ctx.subject,
                     body,
-                    attachment_data=pdf_data,
-                    attachment_filename=pdf_filename,
+                    attachment_data=ctx.pdf_data,
+                    attachment_filename=ctx.pdf_filename,
                 )
 
             return jsonify(
@@ -661,4 +622,5 @@ def test_email():
 
 if __name__ == "__main__":
     port = int(os.getenv("FLASK_PORT", "5000"))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    debug = os.getenv("FLASK_DEBUG", "false").strip().lower() in ("1", "true", "yes", "on")
+    app.run(debug=debug, host="0.0.0.0", port=port)
