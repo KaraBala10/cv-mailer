@@ -778,20 +778,10 @@ function App() {
           <div className={`card${mustSignIn ? " locked-card" : ""}`}>
             <h2>Email Configuration</h2>
             <div className="config-form">
-            {googleClientId && (
+            {googleClientId && oauthAccessToken.trim() && (
               <div className="form-group">
                 <label>Google account *</label>
                 <div className="google-auth-row">
-                  {!oauthAccessToken.trim() ? (
-                    <button
-                      type="button"
-                      className="btn btn-add"
-                      onClick={requestGoogleAccessToken}
-                      disabled={!googleOAuthReady || loading}
-                    >
-                      Sign in with Google
-                    </button>
-                  ) : null}
                   {oauthAccessToken.trim() && (
                     <>
                       {googleUser === null && (
@@ -1013,7 +1003,8 @@ function App() {
           )}
         </div>
 
-        <div className="card">
+        <div className="card-lock-wrap">
+          <div className={`card${mustSignIn ? " locked-card" : ""}`}>
           <div className="card-header">
             <h2>Recipients</h2>
             <div className="card-header-actions">
@@ -1130,6 +1121,15 @@ function App() {
           >
             {loading ? "Sending Emails..." : "Send All Emails"}
           </button>
+          </div>
+          {mustSignIn && !showSignInModal && (
+            <button
+              type="button"
+              className="card-lock-shield"
+              onClick={() => setShowSignInModal(true)}
+              aria-label="Sign in to add recipients"
+            />
+          )}
         </div>
 
         {results && (
