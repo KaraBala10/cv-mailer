@@ -19,6 +19,10 @@ import {
   ListPlus,
   LogOut,
   RefreshCw,
+  Download,
+  FileText,
+  CheckCircle,
+  AlertTriangle,
 } from "./Icons";
 
 const API_BASE_URL =
@@ -69,25 +73,121 @@ const getInitialTheme = () => {
   return "light";
 };
 
-/** Parse pasted / CSV text into recipients. Accepts comma, tab or semicolon delimiters. */
-const parseRecipientsText = (text) => {
+const SAMPLE_CSV =
+  "email,company\n" +
+  "hr@company.com,Company Inc\n" +
+  "jobs@startup.io,\n" +
+  "ceo@example.com,Example LLC\n";
+
+const detectDelimiter = (line) => {
+  if (line.includes(",")) return ",";
+  if (line.includes("\t")) return "\t";
+  if (line.includes(";")) return ";";
+  return ",";
+};
+
+/** Split one CSV line on `delim`, honoring double-quoted fields. */
+const splitCsvLine = (line, delim) => {
   const out = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delim) {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map((s) => s.trim());
+};
+
+/**
+ * Parse a CSV string into recipients.
+ * Requires an `email` header column; `company` is optional (column may be absent).
+ * Returns { recipients, issues, error } — `error` is a fatal/structural problem.
+ */
+const parseCsv = (text) => {
+  const lines = [];
+  (text || "").split(/\r?\n/).forEach((line, i) => {
+    if (line.trim() !== "") lines.push({ text: line, no: i + 1 });
+  });
+
+  if (lines.length === 0) {
+    return {
+      recipients: [],
+      issues: [],
+      error:
+        "The file is empty. It should have a header row (email, company) and at least one recipient below it.",
+    };
+  }
+
+  const delim = detectDelimiter(lines[0].text);
+  const header = splitCsvLine(lines[0].text, delim).map((h) =>
+    h.toLowerCase().trim(),
+  );
+  const emailIdx = header.indexOf("email");
+  const companyIdx = header.indexOf("company");
+
+  if (emailIdx === -1) {
+    return {
+      recipients: [],
+      issues: [],
+      error:
+        'No "email" column was found. The first row must contain a header named "email" (a "company" column is optional).',
+    };
+  }
+
+  const recipients = [];
+  const issues = [];
   const seen = new Set();
-  (text || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      const parts = line.split(/[,;\t]/).map((p) => p.trim());
-      const email = parts[0] || "";
-      const company = parts.slice(1).join(" ").trim();
-      if (!isValidEmail(email)) return;
-      const key = email.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push({ email, company });
-    });
-  return out;
+
+  for (let r = 1; r < lines.length; r++) {
+    const cells = splitCsvLine(lines[r].text, delim);
+    const email = (cells[emailIdx] || "").trim();
+    const company = companyIdx >= 0 ? (cells[companyIdx] || "").trim() : "";
+
+    if (!email) {
+      issues.push(`Row ${lines[r].no}: no email address — skipped.`);
+      continue;
+    }
+    if (!isValidEmail(email)) {
+      issues.push(`Row ${lines[r].no}: "${email}" is not a valid email — skipped.`);
+      continue;
+    }
+    const key = email.toLowerCase();
+    if (seen.has(key)) {
+      issues.push(`Row ${lines[r].no}: "${email}" is a duplicate — skipped.`);
+      continue;
+    }
+    seen.add(key);
+    recipients.push({ email, company });
+  }
+
+  if (recipients.length === 0 && issues.length === 0) {
+    return {
+      recipients,
+      issues,
+      error: "No recipients were found below the header row.",
+    };
+  }
+
+  return { recipients, issues, error: null };
 };
 
 function App() {
@@ -132,7 +232,9 @@ function App() {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [importText, setImportText] = useState("");
+  // { fileName, recipients, issues, error } once a file is parsed; null before.
+  const [importResult, setImportResult] = useState(null);
+  const [csvDragging, setCsvDragging] = useState(false);
   const [sendProgress, setSendProgress] = useState({ current: 0, total: 0 });
   const [testSending, setTestSending] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -201,6 +303,7 @@ function App() {
       if (e.key === "Escape") {
         setShowPreview(false);
         setShowImport(false);
+        setImportResult(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -457,30 +560,71 @@ function App() {
     setPdfFileName(file.name);
   };
 
-  const importRecipients = () => {
-    const parsed = parseRecipientsText(importText);
-    if (parsed.length === 0) {
-      showNotification(
-        "No valid email addresses found. Use one per line: email, company",
-        "warning",
-      );
+  const closeImport = () => {
+    setShowImport(false);
+    setImportResult(null);
+    setCsvDragging(false);
+  };
+
+  const handleCsvFile = (file) => {
+    if (!file) return;
+    const looksCsv =
+      file.name.toLowerCase().endsWith(".csv") ||
+      file.type === "text/csv" ||
+      file.type === "application/vnd.ms-excel";
+    if (!looksCsv) {
+      setImportResult({
+        fileName: file.name,
+        recipients: [],
+        issues: [],
+        error: "That isn't a .csv file. Please upload a file whose name ends in .csv.",
+      });
       return;
     }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseCsv(String(reader.result || ""));
+      setImportResult({ ...parsed, fileName: file.name });
+    };
+    reader.onerror = () => {
+      setImportResult({
+        fileName: file.name,
+        recipients: [],
+        issues: [],
+        error: "Couldn't read the file. It may be corrupted — try exporting it again.",
+      });
+    };
+    reader.readAsText(file);
+  };
+
+  const downloadSampleCsv = () => {
+    const blob = new Blob([SAMPLE_CSV], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "recipients-template.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmImport = () => {
+    if (!importResult || importResult.recipients.length === 0) return;
+    const parsed = importResult.recipients;
     setRecipients((prev) => {
       const existing = new Map(
         prev
           .filter((r) => r.email.trim())
           .map((r) => [r.email.trim().toLowerCase(), r]),
       );
-      parsed.forEach((r) => {
-        existing.set(r.email.toLowerCase(), r);
-      });
+      parsed.forEach((r) => existing.set(r.email.toLowerCase(), r));
       const merged = Array.from(existing.values());
       return merged.length ? merged : [{ email: "", company: "" }];
     });
-    setImportText("");
-    setShowImport(false);
-    showNotification(`Imported ${parsed.length} recipient(s)`, "success");
+    const count = parsed.length;
+    closeImport();
+    showNotification(`Imported ${count} recipient(s)`, "success");
   };
 
   const openEmailPreview = async () => {
@@ -1297,7 +1441,7 @@ function App() {
       {showImport && (
         <div
           className="preview-overlay"
-          onClick={() => setShowImport(false)}
+          onClick={closeImport}
           role="presentation"
         >
           <div
@@ -1311,41 +1455,169 @@ function App() {
               <div>
                 <h2 id="import-title">Import recipients</h2>
                 <p className="preview-subject">
-                  One per line: <code>email, company</code> (company optional)
+                  Upload a CSV file — email is required, company is optional.
                 </p>
               </div>
               <button
                 type="button"
                 className="btn-preview-close"
-                onClick={() => setShowImport(false)}
+                onClick={closeImport}
                 aria-label="Close import"
               >
                 <X size={20} />
               </button>
             </div>
             <div className="import-body">
-              <textarea
-                className="import-textarea"
-                placeholder={
-                  "hr@company.com, Company Inc\njobs@startup.io\nceo@example.com, Example"
-                }
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-              />
+              <div className="csv-hint">
+                <div className="csv-hint-head">
+                  <span className="csv-hint-title">Required format</span>
+                  <button
+                    type="button"
+                    className="csv-sample-link"
+                    onClick={downloadSampleCsv}
+                  >
+                    <Download size={15} />
+                    Download sample
+                  </button>
+                </div>
+                <div className="csv-table-wrap">
+                  <table className="csv-table">
+                    <thead>
+                      <tr>
+                        <th>
+                          email <span className="csv-badge required">required</span>
+                        </th>
+                        <th>
+                          company{" "}
+                          <span className="csv-badge optional">optional</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>hr@company.com</td>
+                        <td>Company Inc</td>
+                      </tr>
+                      <tr>
+                        <td>jobs@startup.io</td>
+                        <td className="csv-empty">(blank)</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="csv-note">
+                  The first row must be the header. You can leave{" "}
+                  <strong>company</strong> blank, or drop the column entirely —
+                  just <strong>email</strong> works too.
+                </p>
+              </div>
+
+              <label
+                className={`dropzone csv-dropzone${
+                  csvDragging ? " dropzone--active" : ""
+                }${
+                  importResult && !importResult.error
+                    ? " dropzone--filled"
+                    : ""
+                }`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setCsvDragging(true);
+                }}
+                onDragLeave={() => setCsvDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setCsvDragging(false);
+                  handleCsvFile(e.dataTransfer.files?.[0]);
+                }}
+              >
+                <span className="dropzone-icon" aria-hidden>
+                  {importResult?.fileName ? (
+                    <FileText size={26} />
+                  ) : (
+                    <UploadCloud size={26} />
+                  )}
+                </span>
+                <span className="dropzone-text">
+                  <strong>
+                    {importResult?.fileName || "Drop your CSV file here"}
+                  </strong>
+                  <small>or click to browse · .csv only</small>
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="dropzone-input"
+                  onChange={(e) => {
+                    handleCsvFile(e.target.files[0]);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+
+              {importResult?.error && (
+                <div className="import-feedback import-feedback--error">
+                  <AlertTriangle size={20} />
+                  <div>
+                    <strong>Couldn't import this file</strong>
+                    <p>{importResult.error}</p>
+                  </div>
+                </div>
+              )}
+
+              {importResult && !importResult.error && (
+                <div className="import-feedback import-feedback--success">
+                  <CheckCircle size={20} />
+                  <div>
+                    <strong>
+                      {importResult.recipients.length} recipient
+                      {importResult.recipients.length === 1 ? "" : "s"} ready to
+                      import
+                    </strong>
+                    {importResult.issues.length > 0 && (
+                      <p>
+                        {importResult.issues.length} row
+                        {importResult.issues.length === 1 ? "" : "s"} skipped —
+                        see details below.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {importResult?.issues?.length > 0 && (
+                <ul className="import-issues">
+                  {importResult.issues.map((issue, i) => (
+                    <li key={i}>
+                      <X size={14} />
+                      <span>{issue}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
               <div className="import-actions">
                 <button
                   type="button"
                   className="btn btn-add"
-                  onClick={() => setShowImport(false)}
+                  onClick={closeImport}
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   className="btn btn-send import-confirm"
-                  onClick={importRecipients}
+                  onClick={confirmImport}
+                  disabled={
+                    !importResult ||
+                    Boolean(importResult.error) ||
+                    importResult.recipients.length === 0
+                  }
                 >
-                  Import
+                  <Download size={17} />
+                  {importResult && !importResult.error && importResult.recipients.length
+                    ? `Import ${importResult.recipients.length}`
+                    : "Import"}
                 </button>
               </div>
             </div>
