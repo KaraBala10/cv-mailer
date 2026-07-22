@@ -78,10 +78,15 @@
   height: 60px;
   margin: 0 auto 16px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--navy), var(--gold));
+  background: var(--navy);
   color: #fff;
   box-shadow: 0 6px 16px rgba(26, 39, 68, 0.25);
   animation: iconPop 0.4s cubic-bezier(0.18, 1.4, 0.4, 1) both;
+}
+
+:root[data-theme="dark"] .signin-icon {
+  background: var(--gold);
+  color: var(--accent-contrast);
 }
 
 .signin-modal h2 {
