@@ -71,9 +71,17 @@
 }
 
 .signin-icon {
-  font-size: 2.4rem;
-  line-height: 1;
-  margin-bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--navy), var(--gold));
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(26, 39, 68, 0.25);
+  animation: iconPop 0.4s cubic-bezier(0.18, 1.4, 0.4, 1) both;
 }
 
 .signin-modal h2 {
@@ -144,6 +152,7 @@
   border: 1px solid var(--navy-600);
   border-bottom: 3px solid var(--gold);
   color: #f7f5f0;
+  animation: fadeUp 0.45s ease both;
 }
 
 .header h1 {
@@ -167,19 +176,25 @@
   right: 16px;
   width: 40px;
   height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  font-size: 1.15rem;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
+  transition: background 0.2s ease, transform 0.3s ease;
   line-height: 1;
 }
 
 .theme-toggle:hover {
   background: rgba(255, 255, 255, 0.2);
-  transform: scale(1.05);
+  transform: rotate(35deg) scale(1.08);
+}
+
+.theme-toggle .icon {
+  animation: iconPop 0.35s cubic-bezier(0.18, 1.4, 0.4, 1) both;
 }
 
 .card {
@@ -190,6 +205,18 @@
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
   transition: box-shadow 0.2s ease, background 0.25s ease, border-color 0.25s ease;
+  animation: fadeUp 0.45s ease both;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .card:hover {
@@ -328,9 +355,35 @@
 }
 
 .dropzone-icon {
-  font-size: 1.6rem;
+  display: inline-flex;
   line-height: 1;
   flex-shrink: 0;
+  color: var(--text-muted);
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.dropzone:hover .dropzone-icon {
+  color: var(--gold);
+  transform: translateY(-2px);
+}
+
+.dropzone--filled .dropzone-icon {
+  color: var(--success);
+}
+
+.dropzone--active .dropzone-icon {
+  color: var(--gold);
+  animation: bob 0.9s ease-in-out infinite;
+}
+
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
 }
 
 .dropzone-text {
@@ -362,20 +415,85 @@
 
 /* Buttons */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 12px 24px;
   border: none;
   border-radius: 8px;
   font-size: 0.9375rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.15s ease, background 0.2s ease, border-color 0.2s ease,
+    box-shadow 0.2s ease, color 0.2s ease;
   font-family: inherit;
   letter-spacing: 0.01em;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
 }
 
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Icons */
+.icon {
+  flex-shrink: 0;
+  vertical-align: -0.15em;
+}
+
+.icon-success {
+  color: var(--success);
+}
+
+.icon-error {
+  color: var(--error);
+}
+
+.icon-info {
+  color: var(--info);
+}
+
+.icon-muted {
+  color: var(--text-muted);
+}
+
+.icon-spin {
+  animation: spin 0.9s linear infinite;
+  transform-origin: center;
+}
+
+.icon-pop {
+  animation: iconPop 0.32s cubic-bezier(0.18, 1.4, 0.4, 1) both;
+  transform-origin: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes iconPop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.25);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .btn-add {
@@ -682,25 +800,10 @@
 }
 
 .status-indicator {
-  font-size: 1.125rem;
   flex-shrink: 0;
-  animation: pulse 1.5s ease-in-out infinite;
+  display: inline-flex;
+  align-items: center;
   line-height: 1;
-}
-
-.status-indicator.status-success,
-.status-indicator.status-error {
-  animation: none;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
 }
 
 .status-message {

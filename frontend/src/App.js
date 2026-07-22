@@ -2,6 +2,24 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "axios";
 import "./App.css";
 import Notification from "./Notification";
+import {
+  Sun,
+  Moon,
+  UploadCloud,
+  FileCheck,
+  Check,
+  X,
+  Loader,
+  Clock,
+  Mail,
+  Eye,
+  Send,
+  Plus,
+  Trash,
+  ListPlus,
+  LogOut,
+  RefreshCw,
+} from "./Icons";
 
 const API_BASE_URL =
   process.env.REACT_APP_API_URL || "https://karabala10.pythonanywhere.com/api";
@@ -635,7 +653,7 @@ function App() {
           collected.push({ email, status: "success", message: "Email sent" });
           setRecipientStatus((prev) => ({
             ...prev,
-            [email]: { status: "success", message: "✅ Sent" },
+            [email]: { status: "success", message: "Sent" },
           }));
         } else {
           failed++;
@@ -643,7 +661,7 @@ function App() {
           collected.push({ email, status: "error", message: msg });
           setRecipientStatus((prev) => ({
             ...prev,
-            [email]: { status: "error", message: `❌ ${msg}` },
+            [email]: { status: "error", message: msg },
           }));
         }
       } catch (error) {
@@ -652,7 +670,7 @@ function App() {
         collected.push({ email, status: "error", message: errorMsg });
         setRecipientStatus((prev) => ({
           ...prev,
-          [email]: { status: "error", message: `❌ ${errorMsg}` },
+          [email]: { status: "error", message: errorMsg },
         }));
       }
 
@@ -768,7 +786,7 @@ function App() {
             aria-label="Toggle dark mode"
             title="Toggle dark mode"
           >
-            {theme === "dark" ? "☀️" : "🌙"}
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button>
           <h1>CV-Mailer</h1>
           <p>Job Application Email Automation</p>
@@ -838,6 +856,7 @@ function App() {
                         onClick={clearGoogleSession}
                         disabled={loading}
                       >
+                        <LogOut size={16} />
                         Sign out
                       </button>
                     </>
@@ -902,7 +921,11 @@ function App() {
                 }}
               >
                 <span className="dropzone-icon" aria-hidden>
-                  {pdfFileName ? "📄" : "⬆️"}
+                  {pdfFileName ? (
+                    <FileCheck size={26} />
+                  ) : (
+                    <UploadCloud size={26} />
+                  )}
                 </span>
                 <span className="dropzone-text">
                   {pdfFileName ? (
@@ -979,6 +1002,11 @@ function App() {
                 onClick={openEmailPreview}
                 disabled={!canPreviewEmail || previewLoading || loading}
               >
+                {previewLoading ? (
+                  <Loader size={18} className="icon-spin" />
+                ) : (
+                  <Eye size={18} />
+                )}
                 {previewLoading ? "Loading preview..." : "Preview Email"}
               </button>
               <button
@@ -988,6 +1016,11 @@ function App() {
                 disabled={testSending || loading || !authReadyForSend}
                 title="Send a copy to your own signed-in address"
               >
+                {testSending ? (
+                  <Loader size={18} className="icon-spin" />
+                ) : (
+                  <Send size={18} />
+                )}
                 {testSending ? "Sending test..." : "Send Test to Myself"}
               </button>
             </div>
@@ -1013,10 +1046,16 @@ function App() {
                 className="btn btn-add"
                 disabled={loading}
               >
+                <ListPlus size={17} />
                 Import list
               </button>
-              <button onClick={addRecipient} className="btn btn-add" disabled={loading}>
-                + Add
+              <button
+                onClick={addRecipient}
+                className="btn btn-add"
+                disabled={loading}
+              >
+                <Plus size={17} />
+                Add
               </button>
               {recipients.some((r) => r.email.trim()) && (
                 <button
@@ -1024,6 +1063,7 @@ function App() {
                   className="btn btn-remove"
                   disabled={loading}
                 >
+                  <Trash size={16} />
                   Clear
                 </button>
               )}
@@ -1054,10 +1094,18 @@ function App() {
                         <span
                           className={`status-indicator status-${status.status}`}
                         >
-                          {status.status === "success" && "✅"}
-                          {status.status === "error" && "❌"}
-                          {status.status === "sending" && "⏳"}
-                          {status.status === "pending" && "⏸️"}
+                          {status.status === "success" && (
+                            <Check size={18} className="icon-pop icon-success" />
+                          )}
+                          {status.status === "error" && (
+                            <X size={18} className="icon-pop icon-error" />
+                          )}
+                          {status.status === "sending" && (
+                            <Loader size={18} className="icon-spin icon-info" />
+                          )}
+                          {status.status === "pending" && (
+                            <Clock size={18} className="icon-muted" />
+                          )}
                         </span>
                       )}
                     </div>
@@ -1119,6 +1167,11 @@ function App() {
             }
             className="btn btn-send"
           >
+            {loading ? (
+              <Loader size={19} className="icon-spin" />
+            ) : (
+              <Send size={19} />
+            )}
             {loading ? "Sending Emails..." : "Send All Emails"}
           </button>
           </div>
@@ -1138,6 +1191,7 @@ function App() {
               <h2>Results</h2>
               {failedCount > 0 && !loading && (
                 <button className="btn btn-secondary" onClick={retryFailed}>
+                  <RefreshCw size={16} />
                   Retry {failedCount} failed
                 </button>
               )}
@@ -1163,7 +1217,12 @@ function App() {
                 <div key={index} className={`result-item ${result.status}`}>
                   <span className="result-email">{result.email}</span>
                   <span className={`result-status ${result.status}`}>
-                    {result.status === "success" ? "✅" : "❌"} {result.message}
+                    {result.status === "success" ? (
+                      <Check size={16} className="icon-success" />
+                    ) : (
+                      <X size={16} className="icon-error" />
+                    )}
+                    {result.message}
                   </span>
                 </div>
               ))}
@@ -1203,7 +1262,7 @@ function App() {
             aria-labelledby="signin-title"
           >
             <div className="signin-icon" aria-hidden>
-              📧
+              <Mail size={30} />
             </div>
             <h2 id="signin-title">Sign in to get started</h2>
             <p>
@@ -1217,6 +1276,11 @@ function App() {
               onClick={requestGoogleAccessToken}
               disabled={!googleOAuthReady}
             >
+              {googleOAuthReady ? (
+                <Mail size={18} />
+              ) : (
+                <Loader size={18} className="icon-spin" />
+              )}
               {googleOAuthReady ? "Sign in with Google" : "Loading Google…"}
             </button>
             <button
@@ -1256,7 +1320,7 @@ function App() {
                 onClick={() => setShowImport(false)}
                 aria-label="Close import"
               >
-                ×
+                <X size={20} />
               </button>
             </div>
             <div className="import-body">
@@ -1315,7 +1379,7 @@ function App() {
                 onClick={() => setShowPreview(false)}
                 aria-label="Close preview"
               >
-                ×
+                <X size={20} />
               </button>
             </div>
             <iframe

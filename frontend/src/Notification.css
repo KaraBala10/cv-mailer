@@ -31,7 +31,8 @@
 }
 
 .notification-icon {
-  font-size: 1.25rem;
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
 }
 
@@ -46,7 +47,6 @@
 .notification-close {
   background: none;
   border: none;
-  font-size: 1.5rem;
   color: #6b7280;
   cursor: pointer;
   padding: 0;
@@ -71,7 +71,8 @@
   background: #f0fdf4;
 }
 
-.notification-success .notification-message {
+.notification-success .notification-message,
+.notification-success .notification-icon {
   color: #065f46;
 }
 
@@ -80,7 +81,8 @@
   background: #fef2f2;
 }
 
-.notification-error .notification-message {
+.notification-error .notification-message,
+.notification-error .notification-icon {
   color: #991b1b;
 }
 
@@ -89,7 +91,8 @@
   background: #fffbeb;
 }
 
-.notification-warning .notification-message {
+.notification-warning .notification-message,
+.notification-warning .notification-icon {
   color: #92400e;
 }
 
@@ -98,7 +101,8 @@
   background: #eff6ff;
 }
 
-.notification-info .notification-message {
+.notification-info .notification-message,
+.notification-info .notification-icon {
   color: #1e40af;
 }
 
